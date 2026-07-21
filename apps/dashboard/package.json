@@ -1,0 +1,22 @@
+{
+  "name": "@ai-dos/dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Dashboard frontend. Foundation scope only — this is scaffold proving the build/lint/test pipeline works for an app package; the actual dashboard is roadmap epic 15, not Project Foundation.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@ai-dos/eslint-config": "workspace:*",
+    "@ai-dos/tsconfig-base": "workspace:*",
+    "@vitest/coverage-v8": "^2.1.8",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@ai-dos/shared-types",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Infrastructure-level utility types every TypeScript package needs. NOT domain entity types — those are generated from specs/schemas/*.schema.json in a later epic, not hand-written here.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@ai-dos/eslint-config": "workspace:*",
+    "@ai-dos/tsconfig-base": "workspace:*",
+    "@vitest/coverage-v8": "^2.1.8",
+    "vitest": "^2.1.8"
+  }
+}

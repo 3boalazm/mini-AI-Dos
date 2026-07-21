@@ -1,0 +1,21 @@
+run:
+  timeout: 3m
+
+linters:
+  enable:
+    - gofmt
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - ineffassign
+    - gosimple
+    - bodyclose
+    - noctx
+
+linters-settings:
+  errcheck:
+    check-blank: true
+
+issues:
+  exclude-use-default: false

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dos.dev/schemas/api-key.schema.json",
+  "title": "APIKey",
+  "description": "Metadata only. The raw key is returned exactly once, out of band, at creation.",
+  "type": "object",
+  "required": ["id", "project_id", "key_prefix", "created_by", "created_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "project_id": { "type": "string", "format": "uuid" },
+    "key_prefix": { "type": "string", "pattern": "^aidos_[a-z]+_[A-Za-z0-9]{8}$" },
+    "created_by": { "type": "string", "format": "uuid" },
+    "last_used_at": { "type": ["string", "null"], "format": "date-time", "default": null },
+    "revoked_at": { "type": ["string", "null"], "format": "date-time", "default": null },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

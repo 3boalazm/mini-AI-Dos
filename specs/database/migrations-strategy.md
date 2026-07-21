@@ -1,0 +1,11 @@
+# Migrations Strategy
+
+**Tooling**: `golang-migrate`, one migration file per schema change, forward-only in production. A migration is never edited after it ships — a mistake gets a new, corrective migration, the same "in-place update via a new entry, never a rewritten history" discipline `VersionHistoryEntry` enforces for data, applied here to schema.
+
+**Versioning**: every entity carries `schema_version` (semver). A **minor** migration adds a nullable column or a new enum value — always backward compatible, no coordination required with running application code. A **major** migration removes or retypes a column — never in place; the old column is deprecated (see `../contracts/validation-rules.md` for the deprecation annotation convention), left in place through one full deprecation window, and only dropped in a later, separate migration once nothing reads it.
+
+**Sequencing with application deploys**: migrations run *before* the application version that depends on them is rolled out (expand-then-contract) — a new nullable column is added and backfilled while the old application version is still running against it unaware, then the new application version deploys and starts using it, then (for major changes) a final migration removes what's no longer read. This ordering is what makes a rolling Kubernetes deployment (see repository root, deployment references) safe against a schema change — there's never a moment where a running pod and the live schema disagree about a required field.
+
+**Partitioned tables** (`../database/relationships.md`): new partitions are created ahead of need by a scheduled job, not by a migration triggered per-partition — a migration changes shape; creating this week's `health_signals` partition is operational maintenance, not a schema change, and conflating the two would mean a routine weekly task requires the same review process as a breaking API change.
+
+**Reversibility**: every migration ships a down-migration. A down-migration that would lose data (dropping a populated column) is written but never run automatically — it exists for disaster-recovery completeness, invoked deliberately, not as part of an automated rollback path that could silently discard rows.

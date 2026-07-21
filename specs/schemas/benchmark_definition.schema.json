@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dos.dev/schemas/benchmark-definition.schema.json",
+  "title": "BenchmarkDefinition",
+  "type": "object",
+  "required": ["id", "name", "category", "applicable_modalities", "dataset_ref", "scorer_ref", "source", "status", "schema_version"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "name": { "type": "string", "minLength": 1 },
+    "category": { "type": "string" },
+    "applicable_modalities": { "type": "array", "items": { "type": "string", "enum": ["text", "vision", "audio", "video"] }, "minItems": 1 },
+    "dataset_ref": { "type": "string", "minLength": 1 },
+    "scorer_ref": { "type": "string", "minLength": 1 },
+    "source": { "type": "string", "enum": ["public_benchmark", "aidos_internal"] },
+    "license_notes": { "type": ["string", "null"], "default": null },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "default": "1.0.0" },
+    "status": { "type": "string", "enum": ["active", "deprecated"] },
+    "cadence": { "type": ["string", "null"], "enum": ["continuous", "daily", "weekly", "monthly", "on_registration", "manual", null] },
+    "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" }
+  },
+  "allOf": [{ "if": { "properties": { "source": { "const": "public_benchmark" } } }, "then": { "required": ["license_notes"], "properties": { "license_notes": { "type": "string", "minLength": 1 } } } }]
+}

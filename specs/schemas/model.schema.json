@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dos.dev/schemas/universal-model.schema.json",
+  "title": "UniversalModelSchema",
+  "type": "object",
+  "required": ["id", "provider_id", "modalities", "status", "schema_version", "sources"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]*$" },
+    "provider_id": { "type": "string" },
+    "family": { "type": ["string", "null"], "default": null },
+    "aliases": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "modalities": { "type": "array", "items": { "type": "string", "enum": ["text", "vision", "audio", "video", "embedding"] }, "minItems": 1 },
+    "context_window_tokens": { "type": ["integer", "null"], "exclusiveMinimum": 0, "default": null },
+    "max_output_tokens": { "type": ["integer", "null"], "exclusiveMinimum": 0, "default": null },
+    "tokenizer_id": { "type": ["string", "null"], "default": null },
+    "capability_ref": { "type": ["string", "null"], "default": null },
+    "pricing_ref": { "type": ["string", "null"], "default": null },
+    "price_summary": { "type": ["object", "null"], "default": null, "properties": {
+      "min_input_per_1m": { "type": ["number", "null"] }, "min_output_per_1m": { "type": ["number", "null"] },
+      "currency": { "type": "string", "default": "USD" }, "as_of": { "type": "string", "format": "date-time" } } },
+    "benchmark_refs": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "status": { "type": "string", "enum": ["active", "beta", "deprecated", "disabled"] },
+    "released_at": { "type": ["string", "null"], "format": "date", "default": null },
+    "deprecated_at": { "type": ["string", "null"], "format": "date", "default": null },
+    "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "sources": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+  },
+  "allOf": [{ "if": { "properties": { "status": { "const": "deprecated" } } }, "then": { "required": ["deprecated_at"] } }]
+}

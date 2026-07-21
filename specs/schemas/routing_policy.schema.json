@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dos.dev/schemas/routing-policy.schema.json",
+  "title": "RoutingPolicy",
+  "type": "object",
+  "required": ["id", "organization_id", "name", "strategy_ref", "is_default", "created_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "organization_id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string", "minLength": 1 },
+    "strategy_ref": { "type": "string", "pattern": "^[a-zA-Z_][a-zA-Z0-9_.]*:[a-zA-Z_][a-zA-Z0-9_]*$" },
+    "cost_ceiling": { "type": ["number", "null"], "exclusiveMinimum": 0, "default": null },
+    "is_default": { "type": "boolean", "default": false },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  }
+}

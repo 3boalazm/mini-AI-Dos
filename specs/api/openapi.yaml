@@ -1,0 +1,348 @@
+openapi: 3.1.0
+info:
+  title: AI-DOS Provider Gateway API
+  version: "1.0.0"
+  description: >
+    Canonical API contract. Routes marked internal are never publicly
+    reachable — see ../contracts/gateway-contract.md for the exposure
+    boundary. $ref targets point at ../schemas/ where a standalone
+    schema exists; inline schemas are used elsewhere and should migrate
+    to $ref as those files are added (see ../schemas/README.md).
+servers:
+  - url: https://api.aidos.dev/v1
+    description: Public gateway surface
+  - url: https://internal.aidos.dev/internal/v1
+    description: Internal only — never exposed publicly
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      description: "AI-DOS-issued API key, format aidos_{env}_{random32}"
+    OidcAuth:
+      type: openIdConnect
+      openIdConnectUrl: https://auth.aidos.dev/.well-known/openid-configuration
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, default: 20, maximum: 100 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      schema: { type: string }
+  responses:
+    ProblemDetails:
+      description: RFC 7807 error body (internal-facing routes)
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            required: [type, title, status]
+            properties:
+              type: { type: string, format: uri }
+              title: { type: string }
+              status: { type: integer }
+              detail: { type: string }
+    OpenAIError:
+      description: OpenAI-compatible error body (Gateway completion routes)
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [message, type]
+                properties:
+                  message: { type: string }
+                  type: { type: string }
+                  code: { type: string }
+  schemas:
+    Provider:
+      $ref: "../schemas/provider.schema.json"
+    Model:
+      $ref: "../schemas/model.schema.json"
+    Organization:
+      $ref: "../schemas/organization.schema.json"
+    Project:
+      $ref: "../schemas/project.schema.json"
+    APIKey:
+      $ref: "../schemas/api_key.schema.json"
+    RoutingPolicy:
+      $ref: "../schemas/routing_policy.schema.json"
+    BenchmarkResult:
+      $ref: "../schemas/benchmark_result.schema.json"
+    HealthScore:
+      $ref: "../schemas/health_score.schema.json"
+
+paths:
+  /auth/keys:
+    post:
+      summary: Issue a new API key
+      security: [{ OidcAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201":
+          description: Key created — raw key returned exactly once, here only
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/APIKey"
+                  - type: object
+                    properties: { raw_key: { type: string } }
+        default: { $ref: "#/components/responses/ProblemDetails" }
+
+  /auth/keys/{id}:
+    delete:
+      summary: Revoke an API key
+      security: [{ OidcAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Revoked }
+
+  /organizations:
+    post:
+      summary: Create an organization
+      security: [{ OidcAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Organization" }
+      responses:
+        "201":
+          description: Organization created
+          content: { application/json: { schema: { $ref: "#/components/schemas/Organization" } } }
+
+  /organizations/{id}:
+    get:
+      summary: Get organization
+      security: [{ OidcAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200":
+          description: Organization
+          content: { application/json: { schema: { $ref: "#/components/schemas/Organization" } } }
+    patch:
+      summary: Update organization
+      security: [{ OidcAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200":
+          description: Updated organization
+          content: { application/json: { schema: { $ref: "#/components/schemas/Organization" } } }
+
+  /organizations/{id}/projects:
+    get:
+      summary: List projects
+      security: [{ OidcAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Paginated project list
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Project" } } } }
+    post:
+      summary: Create project
+      security: [{ OidcAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "201":
+          description: Project created
+          content: { application/json: { schema: { $ref: "#/components/schemas/Project" } } }
+
+  /organizations/{id}/routing-policies:
+    get:
+      summary: List routing policies
+      security: [{ OidcAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200":
+          description: Routing policy list
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/RoutingPolicy" } } } }
+    post:
+      summary: Create routing policy
+      security: [{ OidcAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "201":
+          description: Routing policy created
+          content: { application/json: { schema: { $ref: "#/components/schemas/RoutingPolicy" } } }
+
+  /organizations/{id}/invoices:
+    get:
+      summary: List invoices
+      security: [{ OidcAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: Invoice list }
+
+  /organizations/{id}/usage:
+    get:
+      summary: Aggregated usage summary — never raw per-request rows over this API
+      security: [{ OidcAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: Aggregated usage summary }
+
+  /organizations/{id}/audit-log:
+    get:
+      summary: Read the append-only audit trail
+      security: [{ OidcAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: VersionHistoryEntry list }
+
+  /providers:
+    get:
+      summary: List the provider catalog
+      responses:
+        "200":
+          description: Provider list
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Provider" } } } }
+
+  /providers/{id}/health:
+    get:
+      summary: Current health snapshot for a provider
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: Current HealthScore
+          content: { application/json: { schema: { $ref: "#/components/schemas/HealthScore" } } }
+
+  /providers/{id}/incidents:
+    get:
+      summary: External incident signals for a provider
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "HealthSignal list, source=external" }
+
+  /models:
+    get:
+      summary: List models — matches OpenAI-compatible GET /v1/models shape
+      responses:
+        "200":
+          description: Model list, filtered to the caller's tenant entitlements
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Model" } } } }
+
+  /models/{id}/compatible:
+    get:
+      summary: Find models compatible with a reference model (turn 7 find_compatible)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: Compatible model list
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Model" } } } }
+
+  /models/{id}/pricing:
+    get:
+      summary: Pricing time series for a model
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "PricingEntry list, time series" }
+
+  /benchmarks:
+    get:
+      summary: List benchmark definitions
+      responses:
+        "200": { description: Benchmark list }
+
+  /benchmarks/{id}/results:
+    get:
+      summary: Results for a benchmark
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: BenchmarkResult list
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/BenchmarkResult" } } } }
+
+  /chat/completions:
+    post:
+      summary: Chat completion — OpenAI-compatible wire shape
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { description: "UniversalChatRequest, OpenAI-shaped on the wire" }
+      responses:
+        "200": { description: "UniversalChatResponse, or text/event-stream when stream:true" }
+        "429": { $ref: "#/components/responses/OpenAIError" }
+        "401": { $ref: "#/components/responses/OpenAIError" }
+        "400": { $ref: "#/components/responses/OpenAIError" }
+
+  /images/generations:
+    post:
+      summary: Image generation
+      responses:
+        "200": { description: UniversalImageResponse }
+
+  /embeddings:
+    post:
+      summary: Embeddings
+      responses:
+        "200": { description: UniversalEmbeddingResponse }
+
+  /audio/transcriptions:
+    post:
+      summary: Speech to text
+      responses:
+        "200": { description: UniversalTranscriptionResponse }
+
+  /audio/speech:
+    post:
+      summary: Text to speech
+      responses:
+        "200": { description: UniversalSynthesisResponse }
+
+  /videos/generations:
+    post:
+      summary: Video generation — always returns a Job, never synchronous (turn 4 AsyncJobCapable)
+      responses:
+        "202": { description: "Job handle — poll or stream progress, never a synchronous asset" }
+
+  /internal/providers:
+    post:
+      summary: Register a provider (internal only — never public)
+      security: [{ OidcAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { description: ProviderDraft }
+      responses:
+        "201":
+          description: Provider created in Draft lifecycle state
+          content: { application/json: { schema: { $ref: "#/components/schemas/Provider" } } }
+        default: { $ref: "#/components/responses/ProblemDetails" }
+
+  /internal/providers/{id}/publish:
+    post:
+      summary: Publish a provider (registry_admin only if trust_level=unverified — see ../contracts/validation-rules.md)
+      security: [{ OidcAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: Provider transitioned to Published
+          content: { application/json: { schema: { $ref: "#/components/schemas/Provider" } } }
+
+  /internal/discovery/models:
+    get:
+      summary: Filtered model discovery — internal callers only
+      security: [{ OidcAuth: [] }]
+      responses:
+        "200":
+          description: Filtered model list
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Model" } } } }

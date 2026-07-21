@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go (services/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      # go.work resolves the workspace, but `./...` from the repo root
+      # does not expand to "every module in the workspace" the way it's
+      # easy to assume — verified locally, not guessed. Each module's
+      # own path is targeted explicitly.
+      - name: Vet
+        run: go vet ./services/foundation/...
+
+      - name: Format check
+        run: |
+          UNFORMATTED=$(gofmt -l services/foundation/)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61.0
+          args: --config=.golangci.yml services/foundation/...
+
+      - name: Build
+        run: go build ./services/foundation/...
+
+      - name: Test
+        run: go test -race -cover ./services/foundation/...
+
+  typescript:
+    name: TypeScript (apps/, packages/, sdk/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Format check
+        run: pnpx prettier --check .
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Test
+        run: pnpm run test:coverage

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dos.dev/schemas/benchmark-result.schema.json",
+  "title": "BenchmarkResult",
+  "type": "object",
+  "required": ["id", "run_id", "benchmark_id", "model_id", "score", "unit", "outcome", "methodology", "measured_at", "dataset_version", "source"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string" }, "run_id": { "type": "string" }, "benchmark_id": { "type": "string" }, "model_id": { "type": "string" },
+    "score": { "type": "number" }, "unit": { "type": "string" },
+    "raw_detail": { "type": ["object", "array", "null"], "default": null },
+    "outcome": { "type": "string", "enum": ["completed", "execution_error", "skipped"], "default": "completed" },
+    "methodology": { "type": "string", "enum": ["vendor_claim", "third_party", "aidos_internal"] },
+    "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "default": null },
+    "measured_at": { "type": "string", "format": "date-time" },
+    "dataset_version": { "type": "string" },
+    "artifact_ref": { "type": ["string", "null"], "default": null },
+    "source": { "type": "string" }
+  },
+  "allOf": [{ "if": { "properties": { "methodology": { "const": "aidos_internal" } } }, "then": { "required": ["confidence"], "properties": { "confidence": { "type": "number" } } } }]
+}

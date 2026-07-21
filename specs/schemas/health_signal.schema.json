@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dos.dev/schemas/health-signal.schema.json",
+  "title": "HealthSignal",
+  "type": "object",
+  "required": ["id", "provider_id", "source", "signal_type", "collected_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string" }, "provider_id": { "type": "string" },
+    "model_id": { "type": ["string", "null"], "default": null },
+    "source": { "type": "string", "enum": ["passive", "active", "external"] },
+    "signal_type": { "type": "string", "enum": ["availability", "latency", "error_rate", "throughput", "rate_limit_proximity", "token_usage", "queue_time_rate_limit", "queue_time_backlog", "incident", "api_drift"] },
+    "value": { "type": ["number", "null"], "default": null }, "unit": { "type": ["string", "null"], "default": null },
+    "window_start": { "type": ["string", "null"], "format": "date-time", "default": null },
+    "window_end": { "type": ["string", "null"], "format": "date-time", "default": null },
+    "raw_detail": { "type": ["object", "null"], "default": null },
+    "collected_at": { "type": "string", "format": "date-time" },
+    "agent_id": { "type": ["string", "null"], "default": null }
+  },
+  "allOf": [
+    { "if": { "properties": { "source": { "const": "external" } } }, "then": { "properties": { "signal_type": { "const": "incident" } } } },
+    { "if": { "properties": { "signal_type": { "enum": ["incident", "api_drift"] } } }, "then": { "required": ["raw_detail"] } }
+  ]
+}

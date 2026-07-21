@@ -1,0 +1,9 @@
+go 1.22
+
+use ./services/foundation
+
+// Future service modules (services/gateway, services/registry, and so
+// on) are added here as their own epics create them — per the
+// roadmap, none of them are Project Foundation's scope. Adding a use
+// directive here when a new module is created is the whole integration
+// step; nothing else in this file changes.

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dos.dev/schemas/version-history-entry.schema.json",
+  "title": "VersionHistoryEntry",
+  "type": "object",
+  "required": ["id", "entity_type", "entity_id", "change_type", "changed_via", "occurred_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string" },
+    "entity_type": { "type": "string", "enum": ["provider", "model"] },
+    "entity_id": { "type": "string" },
+    "change_type": { "type": "string", "enum": ["created", "updated", "status_changed", "deprecated", "archived", "rejected"] },
+    "changed_fields": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "previous_snapshot_ref": { "type": ["string", "null"], "default": null },
+    "changed_via": { "type": "string", "enum": ["manual", "sync", "health_monitor", "benchmark_runner", "active_probe"] },
+    "changed_by": { "type": ["string", "null"], "default": null },
+    "reason": { "type": ["string", "null"], "default": null },
+    "occurred_at": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    { "if": { "properties": { "changed_via": { "const": "manual" } } }, "then": { "required": ["changed_by"], "properties": { "changed_by": { "type": "string", "minLength": 1 } } } },
+    { "if": { "properties": { "change_type": { "const": "deprecated" } } }, "then": { "required": ["reason"], "properties": { "reason": { "type": "string", "minLength": 1 } } } }
+  ]
+}

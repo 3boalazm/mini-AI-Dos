@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dos.dev/schemas/extension-point.schema.json",
+  "title": "ExtensionPointDefinition",
+  "type": "object",
+  "required": ["id", "protocol_ref", "cardinality", "description"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "protocol_ref": { "type": "string", "minLength": 1 },
+    "cardinality": { "type": "string", "enum": ["single", "multiple"] },
+    "description": { "type": "string", "minLength": 1 },
+    "introduced_in": { "type": ["string", "null"], "default": null }
+  }
+}

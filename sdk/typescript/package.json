@@ -1,0 +1,24 @@
+{
+  "name": "@ai-dos/sdk",
+  "private": true,
+  "version": "0.1.0",
+  "description": "TypeScript SDK. Foundation scope only: the AIDosError hierarchy from specs/sdk/typescript.md. The actual client (chat.complete, embeddings.create, etc.) is out of scope — those methods make real API calls, which Project Foundation explicitly excludes.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@ai-dos/eslint-config": "workspace:*",
+    "@ai-dos/tsconfig-base": "workspace:*",
+    "@vitest/coverage-v8": "^2.1.8",
+    "vitest": "^2.1.8"
+  }
+}

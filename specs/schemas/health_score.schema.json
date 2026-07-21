@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dos.dev/schemas/health-score.schema.json",
+  "title": "HealthScore",
+  "type": "object",
+  "required": ["id", "provider_id", "status", "circuit_state", "contributing_signals", "scorer_ref", "scored_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string" }, "provider_id": { "type": "string" }, "model_id": { "type": ["string", "null"], "default": null },
+    "status": { "type": "string", "enum": ["healthy", "degraded", "down", "unknown"] },
+    "circuit_state": { "type": "string", "enum": ["closed", "open", "half_open"] },
+    "previous_circuit_state": { "type": ["string", "null"], "enum": ["closed", "open", "half_open", null], "default": null },
+    "composite_score": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "default": null },
+    "contributing_signals": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "reason": { "type": ["string", "null"], "default": null },
+    "scorer_ref": { "type": "string", "minLength": 1 },
+    "scored_at": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [{ "if": { "properties": { "circuit_state": { "const": "open" } } }, "then": { "required": ["reason"], "properties": { "reason": { "type": "string", "minLength": 1 } } } }]
+}

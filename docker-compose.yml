@@ -1,0 +1,50 @@
+name: ai-dos
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ai_dos
+      POSTGRES_PASSWORD: ai_dos_local
+      POSTGRES_DB: ai_dos
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_dos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nats:
+    image: nats:2.10-alpine
+    # -js enables JetStream (TDS §1: persistence/replay/consumer groups,
+    # not bare pub/sub — see specs/contracts and roadmap epic 6/8 for
+    # why core NATS alone isn't enough for this system's event needs).
+    command: ["-js"]
+    ports:
+      - "4222:4222"
+      - "8222:8222" # monitoring endpoint
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+
+# Service containers (gateway, registry, and so on) are added here as
+# their epics build them — Project Foundation provides the
+# infrastructure they'll depend on, not the services themselves.

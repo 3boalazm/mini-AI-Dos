@@ -2,19 +2,19 @@
 
 Authoritative, must reflect reality — never mark a phase done here without a corresponding `PHASE_<N>_REPORT.md` whose Definition of Done checklist is fully satisfied. See `EXECUTION_STATE.md` for the live in-progress detail and `ARCHITECTURE.md` for the as-built system shape.
 
-| Phase | Name                       | Status         | Report                   |
-| ----- | -------------------------- | -------------- | ------------------------ |
-| 0     | Baseline Stabilization     | 🟡 In progress | _(pending — this phase)_ |
-| 1     | Database Foundation        | ⬜ Not started | —                        |
-| 2     | Provider Platform          | ⬜ Not started | —                        |
-| 3     | Identity & Access          | ⬜ Not started | —                        |
-| 4     | Gateway & Routing          | ⬜ Not started | —                        |
-| 5     | Agent Runtime              | ⬜ Not started | —                        |
-| 6     | Secure Tool Runtime        | ⬜ Not started | —                        |
-| 7     | Memory & Context           | ⬜ Not started | —                        |
-| 8     | Orchestration & Subagents  | ⬜ Not started | —                        |
-| 9     | Channels & Voice           | ⬜ Not started | —                        |
-| 10    | Production & Observability | ⬜ Not started | —                        |
+| Phase | Name                       | Status         | Report                                                   |
+| ----- | -------------------------- | -------------- | -------------------------------------------------------- |
+| 0     | Baseline Stabilization     | 🟢 Complete    | [PHASE_0_REPORT.md](PHASE_0_REPORT.md), commit `9251a7a` |
+| 1     | Database Foundation        | ⬜ Not started | —                                                        |
+| 2     | Provider Platform          | ⬜ Not started | —                                                        |
+| 3     | Identity & Access          | ⬜ Not started | —                                                        |
+| 4     | Gateway & Routing          | ⬜ Not started | —                                                        |
+| 5     | Agent Runtime              | ⬜ Not started | —                                                        |
+| 6     | Secure Tool Runtime        | ⬜ Not started | —                                                        |
+| 7     | Memory & Context           | ⬜ Not started | —                                                        |
+| 8     | Orchestration & Subagents  | ⬜ Not started | —                                                        |
+| 9     | Channels & Voice           | ⬜ Not started | —                                                        |
+| 10    | Production & Observability | ⬜ Not started | —                                                        |
 
 Legend: ⬜ not started · 🟡 in progress · 🟢 complete (acceptance gate passed) · 🔴 blocked
 

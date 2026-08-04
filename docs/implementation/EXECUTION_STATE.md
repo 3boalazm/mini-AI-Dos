@@ -4,11 +4,11 @@
 
 ## Current phase
 
-**Phase 0 — Baseline Stabilization** — all checks green, report written, ready to commit.
+**Phase 0 — Baseline Stabilization — COMPLETE**, committed as `9251a7a`. Awaiting the user's direction on the Phase 1 blocker (Docker) before starting Phase 1.
 
 ## Completed phases
 
-None committed yet — Phase 0 checkpoint commit is the next action.
+- **Phase 0 — Baseline Stabilization** (commit `9251a7a`) — see `PHASE_0_REPORT.md` for the full checklist.
 
 ## This session's verified results (fresh execution, not cited from prior claims)
 
@@ -46,23 +46,17 @@ None committed yet — Phase 0 checkpoint commit is the next action.
 3. **No Python on this machine** — blocks _executing_ the fixed `specs/schemas/_verify_all.py` to confirm it works end-to-end. Offered alongside Go, not selected. Low urgency (doesn't block any phase's implementation work), but the fix remains unverified until someone runs it.
 4. **golangci-lint version drift** (v1.63.4 vs CI's pinned v1.61.0) — see Toolchain deviations above. Worth CI's own pin being bumped at some point, but that's a CI-config change, out of scope for "fix only genuine baseline issues" in application/spec code.
 
-## Uncommitted working-tree changes (Phase 0 diff, ready to commit)
+## Working tree
 
-- `specs/schemas/_verify_all.py` — path bug fix
-- `specs/api/openapi.yaml` — added missing `deprecate` path
-- `services/foundation/errors/errors_test.go` — errcheck fix
-- `docs/implementation/{ARCHITECTURE,ROADMAP_STATUS,EXECUTION_STATE,PHASE_0_REPORT}.md` — new
-- `.husky/commit-msg`, `.husky/pre-commit` — pre-existing mode-only diff (Windows checkout artifact, predates this session); left as-is, not this phase's concern, will not be included in the Phase 0 commit
+Clean except `.husky/commit-msg`, `.husky/pre-commit` — a pre-existing mode-only diff (100755→100644) that predates this session. Root cause: this filesystem doesn't preserve the executable bit the way git's index recorded it (`core.fileMode` behavior), so it reappears no matter what's checked out. Not fixed — fixing it would mean changing git config, which is out of bounds regardless of how low-risk it looks. Harmless; not part of any commit.
 
 ## Latest commit
 
-`2a5cfc252e0b284954477f97ea73406a5c65f036` — Phase 0's commit has not been created yet; happens immediately after this file is written, once the user has seen the Phase 0 report.
+`9251a7a` — `fix(foundation): phase 0 baseline stabilization — verified toolchain, spec fixes`. 7 files changed (284 insertions, 4 deletions): the 3 source/spec fixes plus the 4 new `docs/implementation/*.md` tracking files. Commit-message scope had to be `foundation` (not `phase-0` — `commitlint.config.js` enforces a fixed scope enum: `foundation, apps, packages, services, sdk, specs, tools, ci, docs`) and subject had to be lower-case (commitlint `subject-case` rule) — both caught correctly by this repo's own hooks, not worked around.
 
 ## Next action
 
-1. Git-diff review (Step E) to confirm no unrelated changes.
-2. Commit as `fix(phase-0): baseline stabilization — toolchain verified, schema script and openapi spec-internal fixes`.
-3. Ask the user how to handle the Phase 1 blocker (Docker/Postgres) before starting Phase 1 — do not silently proceed into Phase 1 in the same turn.
+Ask the user how to handle the Phase 1 blocker (Docker/Postgres) before starting Phase 1 — do not silently proceed into Phase 1 without that answer.
 
 ## Test status summary
 

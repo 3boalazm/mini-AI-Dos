@@ -338,6 +338,26 @@ paths:
           description: Provider transitioned to Published
           content: { application/json: { schema: { $ref: "#/components/schemas/Provider" } } }
 
+  /internal/providers/{id}/deprecate:
+    post:
+      summary: Deprecate a provider (registry_admin — see ../contracts/provider-contract.md#versioning and ../api/providers.md)
+      security: [{ OidcAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: Provider transitioned to Deprecated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Provider" } } }
+        default: { $ref: "#/components/responses/ProblemDetails" }
+
   /internal/discovery/models:
     get:
       summary: Filtered model discovery — internal callers only

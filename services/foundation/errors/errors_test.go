@@ -38,7 +38,10 @@ func TestToProblemDetails_NeverLeaksCause(t *testing.T) {
 	wrapped := Wrap(CodeInternal, "could not complete request", underlying)
 
 	pd := wrapped.ToProblemDetails()
-	body, _ := json.Marshal(pd)
+	body, err := json.Marshal(pd)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
 
 	if pd.Detail != "could not complete request" {
 		t.Errorf("expected Detail to be the safe message, got %q", pd.Detail)

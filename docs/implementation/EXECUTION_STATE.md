@@ -4,11 +4,29 @@
 
 ## Current phase
 
-**Phase 0 — Baseline Stabilization — COMPLETE**, committed as `9251a7a`. Awaiting the user's direction on the Phase 1 blocker (Docker) before starting Phase 1.
+**Phase 1 — Database Foundation — BLOCKED at a restart boundary.** User chose Docker Desktop for Phase 1's Postgres. Docker Desktop is installed (binaries confirmed, `docker.exe --version` → 29.6.2) but cannot run: its WSL2 backend is not present on this machine, and enabling it requires an elevated (Administrator) action this non-interactive session cannot perform. See "Phase 1 blocker" below for the exact state and what the user needs to do.
 
 ## Completed phases
 
 - **Phase 0 — Baseline Stabilization** (commit `9251a7a`) — see `PHASE_0_REPORT.md` for the full checklist.
+
+## Phase 1 blocker — needs the user, interactively, at the machine
+
+1. `winget install Docker.DockerDesktop` completed ("Successfully installed") — the installer itself was able to self-elevate (likely via a UAC prompt winget handled), so Docker Desktop's files are genuinely present at `C:\Program Files\Docker\Docker\`.
+2. Docker Desktop cannot actually run without a backend (WSL2 or Hyper-V). Checked: `wsl --status` → "The Windows Subsystem for Linux is not installed." This machine has never had WSL enabled.
+3. Tried `wsl --install --no-launch` — same "not installed" error, not an install attempt. This machine's `wsl.exe` appears to be the legacy stub that requires the older manual enable-feature flow, not the modern one-command installer.
+4. Checked whether this session could self-elevate: `Get-WindowsOptionalFeature -Online ...` → "The requested operation requires elevation." `([Security.Principal.WindowsPrincipal]...).IsInRole(Administrator)` → `False` for this non-interactive shell. Enabling Windows optional features (WSL, Virtual Machine Platform) requires an interactive UAC consent this automated session cannot provide, regardless of whether the underlying account has admin rights.
+
+**What actually needs to happen (the user, not me, at the physical/interactive session):**
+
+```
+# In an Administrator PowerShell or Command Prompt:
+wsl --install
+# then restart Windows
+# then launch "Docker Desktop" once from the Start menu and let it finish first-run setup
+```
+
+After that, `docker --version`, `docker compose version`, and `docker info` should all succeed, and Phase 1 can proceed exactly as scoped (real Postgres via this repo's own `docker-compose.yml`, real migrations, real integration tests — no static-inspection-only substitute, per explicit instruction).
 
 ## This session's verified results (fresh execution, not cited from prior claims)
 
@@ -56,7 +74,7 @@ Clean except `.husky/commit-msg`, `.husky/pre-commit` — a pre-existing mode-on
 
 ## Next action
 
-Ask the user how to handle the Phase 1 blocker (Docker/Postgres) before starting Phase 1 — do not silently proceed into Phase 1 without that answer.
+Waiting on the user to run `wsl --install` from an elevated shell and restart Windows (see "Phase 1 blocker" above). Once they confirm, verify with `docker --version && docker compose version && docker info`, then proceed with Phase 1's actual audit/design/implement loop against `specs/database/`. Do not attempt Phase 1 implementation against an unreachable database in the meantime — that would violate the explicit "do not mark anything complete based on static inspection alone" instruction this phase was given.
 
 ## Test status summary
 

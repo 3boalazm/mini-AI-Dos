@@ -16,6 +16,7 @@ import (
 	"github.com/ai-dos/gateway/internal/config"
 	"github.com/ai-dos/gateway/internal/provider"
 	"github.com/ai-dos/gateway/internal/ratelimit"
+	"github.com/ai-dos/gateway/internal/store"
 )
 
 // Server owns the HTTP server and its dependencies.
@@ -23,15 +24,27 @@ type Server struct {
 	cfg      *config.Config
 	log      *logging.Logger
 	provider provider.Provider
-	limiter  *ratelimit.Limiter
-	httpSrv  *http.Server
+	// repo is non-nil exactly when cfg.AuthMode is "database". There is
+	// no fallback path: with a repo present, the env key is never
+	// consulted; without one, the database is never consulted.
+	repo    store.Repository
+	limiter *ratelimit.Limiter
+	httpSrv *http.Server
 }
 
 // New assembles a Server from already-constructed dependencies.
-// Provider construction lives in cmd/gateway, not here — the server
-// does not know how providers are configured, only how to call one.
-func New(cfg *config.Config, log *logging.Logger, p provider.Provider) *Server {
-	s := &Server{cfg: cfg, log: log, provider: p}
+// Provider and repository construction live in cmd/gateway, not here —
+// the server does not know how they are configured, only how to call
+// them. repo must be nil in env auth mode and non-nil in database
+// mode; New enforces the pairing rather than trusting the caller.
+func New(cfg *config.Config, log *logging.Logger, p provider.Provider, repo store.Repository) *Server {
+	if (cfg.AuthMode == config.AuthModeDatabase) != (repo != nil) {
+		// A mismatch is a programming error in the wiring, not a runtime
+		// condition to tolerate — failing loudly here is what prevents a
+		// silent fallback from database auth to env auth.
+		panic("server.New: repo must be provided if and only if AuthMode is database")
+	}
+	s := &Server{cfg: cfg, log: log, provider: p, repo: repo}
 
 	if cfg.RateLimitEnabled {
 		s.limiter = ratelimit.New(cfg.RateLimitRequests, cfg.RateLimitWindow, util.RealClock{})

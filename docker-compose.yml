@@ -12,7 +12,14 @@ services:
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     environment:
-      MINI_AI_DOS_API_KEY: ${MINI_AI_DOS_API_KEY:?set MINI_AI_DOS_API_KEY in .env}
+      # env mode (default): only MINI_AI_DOS_API_KEY matters.
+      # database mode: set API_KEY_AUTH_MODE=database in .env — the
+      # gateway then authenticates against Postgres and fails fast if
+      # it is unreachable or unmigrated. Development-safe credentials,
+      # compose-only, matching the postgres service below.
+      API_KEY_AUTH_MODE: ${API_KEY_AUTH_MODE:-env}
+      MINI_AI_DOS_API_KEY: ${MINI_AI_DOS_API_KEY:-}
+      DATABASE_URL: ${DATABASE_URL:-postgres://mini_ai_dos:mini_ai_dos_local@postgres:5432/mini_ai_dos?sslmode=disable}
       AI_PROVIDER: ${AI_PROVIDER:-mock}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
@@ -22,6 +29,9 @@ services:
       RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-false}
       RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-60}
       RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-60}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   postgres:
     image: postgres:16-alpine

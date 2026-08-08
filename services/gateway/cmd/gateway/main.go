@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"github.com/ai-dos/gateway/internal/config"
 	"github.com/ai-dos/gateway/internal/provider"
 	"github.com/ai-dos/gateway/internal/server"
+	"github.com/ai-dos/gateway/internal/store"
 )
 
 const (
@@ -24,6 +26,9 @@ const (
 	providerTimeout = 60 * time.Second
 	// shutdownGrace is how long in-flight requests get to finish.
 	shutdownGrace = 15 * time.Second
+	// dbConnectTimeout bounds the startup connection attempt in database
+	// auth mode — fail fast with a clear error, don't hang.
+	dbConnectTimeout = 10 * time.Second
 )
 
 func main() {
@@ -57,7 +62,33 @@ func run() error {
 		log.Info("provider configured", "provider", "mock")
 	}
 
-	srv := server.New(cfg, log, p)
+	// Database auth mode: connect and verify readiness up front. Any
+	// failure here aborts startup — security configuration never
+	// silently degrades to env-key auth.
+	var repo store.Repository
+	var pg *store.Postgres
+	if cfg.AuthMode == config.AuthModeDatabase {
+		ctx, cancel := context.WithTimeout(context.Background(), dbConnectTimeout)
+		var err error
+		pg, err = store.NewPostgres(ctx, cfg.DatabaseURL)
+		if err != nil {
+			cancel()
+			return fmt.Errorf("database auth mode: %w", err)
+		}
+		if err := pg.Ready(ctx); err != nil {
+			cancel()
+			pg.Close()
+			return fmt.Errorf("database auth mode: %w", err)
+		}
+		cancel()
+		defer pg.Close()
+		repo = pg
+		log.Info("database connected", "auth_mode", "database")
+	} else {
+		log.Info("auth configured", "auth_mode", "env")
+	}
+
+	srv := server.New(cfg, log, p, repo)
 	ln, err := srv.Listen()
 	if err != nil {
 		return fmt.Errorf("failed to listen on port %d: %w", cfg.Port, err)

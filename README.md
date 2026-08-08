@@ -11,16 +11,18 @@ event bus — a caller sends a chat completion request with a Bearer
 key, the gateway validates it, forwards it to the configured provider,
 and returns the normalized OpenAI-shaped response.
 
-## Quick start
+Authentication has two explicit modes — `API_KEY_AUTH_MODE=env` (one
+key from the environment, zero database) and
+`API_KEY_AUTH_MODE=database` (hashed keys in PostgreSQL, revocable).
+There is no fallback between them: a misconfigured database mode fails
+at startup instead of silently degrading.
+
+## Development mode (no database)
 
 ```bash
 git clone <repo-url> mini-ai-dos
 cd mini-ai-dos
-cp .env.example .env        # then edit: set MINI_AI_DOS_API_KEY
 ```
-
-Run it directly (no Docker, no database, no upstream account needed —
-the default `mock` provider echoes requests):
 
 ```bash
 MINI_AI_DOS_API_KEY=dev-key go run ./services/gateway/cmd/gateway
@@ -39,31 +41,86 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"any-model","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-To talk to a real OpenAI-compatible provider, set in `.env` (or the
-environment): `AI_PROVIDER=openai`, `AI_API_KEY=<your upstream key>`,
-and optionally `AI_BASE_URL` / `AI_MODEL`. Every variable is
-documented in [.env.example](.env.example) — nothing else is read.
+The default `mock` provider echoes requests, so this works with no
+upstream account. To talk to a real OpenAI-compatible provider, set
+`AI_PROVIDER=openai`, `AI_API_KEY=<your upstream key>`, and optionally
+`AI_BASE_URL` / `AI_MODEL`. Every variable is documented in
+[.env.example](.env.example) — nothing else is read.
 
-### Docker
+## Persistent mode (PostgreSQL-backed API keys)
+
+Start PostgreSQL and set up the environment (the URL below matches
+docker-compose's development credentials):
+
+```bash
+docker compose up -d postgres
+```
+
+```bash
+export DATABASE_URL="postgres://mini_ai_dos:mini_ai_dos_local@localhost:5432/mini_ai_dos?sslmode=disable"
+```
+
+Apply migrations (forward-only, each runs exactly once):
+
+```bash
+go run ./services/gateway/cmd/migrate
+```
+
+Create an API key — the raw key is printed exactly once and only its
+SHA-256 hash is stored:
+
+```bash
+go run ./services/gateway/cmd/keygen -name "my first key"
+```
+
+Start the gateway in database mode (fails fast if PostgreSQL is
+unreachable or unmigrated):
+
+```bash
+API_KEY_AUTH_MODE=database go run ./services/gateway/cmd/gateway
+```
+
+Use it (substitute the key `keygen` printed):
+
+```bash
+curl http://localhost:8080/health
+```
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer mad_YOUR_GENERATED_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"any-model","messages":[{"role":"user","content":"hello"}]}'
+```
+
+Revoke a key (find its id with `-list`); the next request with it
+returns 401:
+
+```bash
+go run ./services/gateway/cmd/keygen -list
+```
+
+```bash
+go run ./services/gateway/cmd/keygen -revoke <key-id>
+```
+
+### Docker (full stack)
 
 ```bash
 docker compose up -d --build
 ```
 
-brings up the gateway (port 8080) and Postgres. Requires
-`MINI_AI_DOS_API_KEY` in `.env`.
+brings up the gateway (port 8080) and Postgres — nothing else. Set
+`MINI_AI_DOS_API_KEY` (env mode, the compose default) or
+`API_KEY_AUTH_MODE=database` in `.env`.
 
-### Database and migrations
+### Database-backed tests
 
-The gateway runtime does not use a database yet — authentication is
-the single `MINI_AI_DOS_API_KEY`. A reviewed, hash-only-storage schema
-for persistent API keys exists at
-[services/gateway/migrations/](services/gateway/migrations/); apply it
-with [golang-migrate](https://github.com/golang-migrate/migrate) once
-Postgres is running:
+The default test suite never needs a database. With PostgreSQL up, the
+integration and E2E layers run too:
 
 ```bash
-migrate -path services/gateway/migrations -database "postgres://mini_ai_dos:mini_ai_dos_local@localhost:5432/mini_ai_dos?sslmode=disable" up
+TEST_DATABASE_URL="postgres://mini_ai_dos:mini_ai_dos_local@localhost:5432/mini_ai_dos?sslmode=disable" go test ./services/gateway/... -v -run 'Postgres|DatabaseMode'
 ```
 
 ## API
@@ -105,7 +162,8 @@ docs/                  developer setup, contributing, architecture notes
 ## Known limitations
 
 - **No streaming** (`stream: true` is rejected with 400 rather than silently ignored).
-- **Single API key** from the environment; the persistent multi-key model exists only as a migration, not wired to the runtime (database work is blocked on Docker/WSL2 on the primary dev machine).
 - **Message content is plain strings** — multi-part content arrays are rejected.
 - **Rate limiting is in-process** (fixed window, single instance). Running multiple replicas multiplies the effective limit.
+- **Key management is a CLI, not an API** — `keygen` is deliberately an operator tool; there is no admin HTTP surface.
+- Database-dependent tests require a reachable PostgreSQL (`TEST_DATABASE_URL`); on the primary dev machine Docker needs WSL2, so they run in CI/elsewhere.
 - `-race` is unavailable on the primary dev machine (no C compiler); CI runs it.

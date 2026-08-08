@@ -23,6 +23,9 @@ linters-settings:
       - (io.Closer).Close
       - (io.ReadCloser).Close
       - (net/http.ResponseWriter).Write
+      # Rollback after a failed statement: the statement's error is the
+      # signal; rollback's own error adds nothing actionable.
+      - (github.com/jackc/pgx/v5.Tx).Rollback
 
 issues:
   exclude-use-default: false

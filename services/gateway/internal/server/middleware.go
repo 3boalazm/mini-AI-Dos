@@ -12,6 +12,7 @@ import (
 	"github.com/ai-dos/foundation/errors"
 	"github.com/ai-dos/foundation/logging"
 	"github.com/ai-dos/foundation/util"
+	"github.com/ai-dos/gateway/internal/store"
 )
 
 // errorsAs is stdlib errors.As, aliased because this package imports
@@ -103,8 +104,8 @@ func (s *Server) withObservability(next http.Handler) http.Handler {
 	})
 }
 
-// withAuth enforces the gateway's single API key as a Bearer token.
-// Comparison is constant-time. The presented value is never logged.
+// withAuth enforces API-key authentication as a Bearer token. The
+// presented value is never logged in any path.
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := r.Header.Get("Authorization")
@@ -113,13 +114,51 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			writeError(w, errors.New(errors.CodeUnauthorized, "missing API key: set the Authorization: Bearer header"))
 			return
 		}
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.APIKey)) != 1 {
-			s.log.FromContext(r.Context()).Warn("rejected request with invalid API key")
-			writeError(w, errors.New(errors.CodeUnauthorized, "invalid API key"))
+		if err := s.authenticate(r.Context(), token); err != nil {
+			writeError(w, err)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// errInvalidKey is the single external authentication failure. Unknown
+// key, revoked key, and wrong env key all produce exactly this — a
+// caller learns nothing about WHY a key was rejected.
+func errInvalidKey() error {
+	return errors.New(errors.CodeUnauthorized, "invalid API key")
+}
+
+// authenticate verifies token against the configured auth mode. Env
+// mode: constant-time comparison against MINI_AI_DOS_API_KEY. Database
+// mode: SHA-256 hash → repository lookup → revocation check. A
+// database failure is an internal error (500), never a 401 and never a
+// fallback to the env key.
+func (s *Server) authenticate(ctx context.Context, token string) error {
+	if s.repo == nil {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.APIKey)) != 1 {
+			s.log.FromContext(ctx).Warn("rejected request with invalid API key")
+			return errInvalidKey()
+		}
+		return nil
+	}
+
+	key, err := s.repo.FindByHash(ctx, store.HashKey(token))
+	if stderrors.Is(err, store.ErrNotFound) {
+		s.log.FromContext(ctx).Warn("rejected request with unknown API key")
+		return errInvalidKey()
+	}
+	if err != nil {
+		// The real error goes to the log; the caller gets an opaque 500.
+		s.log.FromContext(ctx).Error("api key lookup failed", "error", err.Error())
+		return errors.Wrap(errors.CodeInternal, "authentication is temporarily unavailable", err)
+	}
+	if key.Revoked() {
+		// key_prefix is identification, not secret material — safe to log.
+		s.log.FromContext(ctx).Warn("rejected request with revoked API key", "key_prefix", key.KeyPrefix)
+		return errInvalidKey()
+	}
+	return nil
 }
 
 // withRateLimit applies the in-process limiter when enabled.

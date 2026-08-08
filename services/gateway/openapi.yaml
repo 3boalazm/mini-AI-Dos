@@ -18,7 +18,11 @@ components:
     ApiKeyAuth:
       type: http
       scheme: bearer
-      description: The single gateway API key (MINI_AI_DOS_API_KEY).
+      description: >
+        A gateway API key. In env auth mode this is the single
+        MINI_AI_DOS_API_KEY value; in database auth mode it is a key
+        created with the keygen CLI (stored hashed, revocable). The
+        wire format is identical in both modes.
   schemas:
     Message:
       type: object

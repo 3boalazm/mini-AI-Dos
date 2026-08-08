@@ -70,6 +70,42 @@ func TestLoad_OpenAIRequiresUpstreamKey(t *testing.T) {
 	}
 }
 
+func TestLoad_DatabaseModeRequiresDatabaseURL(t *testing.T) {
+	_, err := load(t, map[string]string{"API_KEY_AUTH_MODE": "database"})
+	if err == nil {
+		t.Fatal("expected error: database mode without DATABASE_URL")
+	}
+	if !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Errorf("error should name DATABASE_URL, got: %v", err)
+	}
+}
+
+func TestLoad_DatabaseModeDoesNotRequireEnvKey(t *testing.T) {
+	cfg, err := load(t, map[string]string{
+		"API_KEY_AUTH_MODE": "database",
+		"DATABASE_URL":      "postgres://u:p@localhost:5432/db",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AuthMode != AuthModeDatabase || cfg.DatabaseURL == "" {
+		t.Errorf("database mode not configured: %+v", cfg)
+	}
+	if cfg.APIKey != "" {
+		t.Errorf("env key must not be loaded in database mode, got %q", cfg.APIKey)
+	}
+}
+
+func TestLoad_UnknownAuthModeRejected(t *testing.T) {
+	_, err := load(t, map[string]string{
+		"MINI_AI_DOS_API_KEY": "k",
+		"API_KEY_AUTH_MODE":   "keycloak",
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown auth mode")
+	}
+}
+
 func TestLoad_UnknownProviderRejected(t *testing.T) {
 	_, err := load(t, map[string]string{
 		"MINI_AI_DOS_API_KEY": "k",

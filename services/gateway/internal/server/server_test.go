@@ -31,7 +31,7 @@ func newTestServer(t *testing.T, mutate func(*config.Config)) http.Handler {
 		mutate(cfg)
 	}
 	log := logging.New(logging.Config{Environment: logging.EnvDevelopment, Output: io.Discard})
-	return New(cfg, log, provider.NewMock()).httpSrv.Handler
+	return New(cfg, log, provider.NewMock(), nil).httpSrv.Handler
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path, apiKey, body string) *httptest.ResponseRecorder {

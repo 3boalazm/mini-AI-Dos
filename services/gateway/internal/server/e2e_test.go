@@ -88,7 +88,7 @@ func TestE2E_FullFlow(t *testing.T) {
 		LogLevel: "info",
 	}
 	log := logging.New(logging.Config{Environment: logging.EnvProduction, Level: "info", Output: logs})
-	srv := New(cfg, log, provider.NewMock())
+	srv := New(cfg, log, provider.NewMock(), nil)
 
 	// 1. Start.
 	ln, err := srv.Listen()

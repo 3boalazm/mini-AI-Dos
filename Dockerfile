@@ -2,15 +2,19 @@
 # No secrets are baked in: all configuration is environment variables
 # supplied at run time (see .env.example).
 
-FROM golang:1.24-alpine AS build
+FROM golang:1.25-alpine AS build
 WORKDIR /src
 # Both modules are needed: gateway's go.mod replaces the foundation
-# dependency with the sibling directory.
+# dependency with the sibling directory. Module downloads (pgx) are
+# cached in a separate layer keyed on the go.mod/go.sum pair.
+COPY services/foundation/go.mod services/foundation/
+COPY services/gateway/go.mod services/gateway/go.sum services/gateway/
+WORKDIR /src/services/gateway
+RUN go mod download
+WORKDIR /src
 COPY services/foundation/ services/foundation/
 COPY services/gateway/ services/gateway/
 WORKDIR /src/services/gateway
-# Both modules are stdlib-only — no module downloads, so this builds
-# offline and never needs a proxy.
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mini-ai-dos ./cmd/gateway
 
 FROM alpine:3.20

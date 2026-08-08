@@ -18,14 +18,31 @@ const (
 	ProviderOpenAI = "openai"
 )
 
+// Auth modes accepted in API_KEY_AUTH_MODE.
+const (
+	// AuthModeEnv authenticates against the single MINI_AI_DOS_API_KEY
+	// environment variable — zero-database development mode.
+	AuthModeEnv = "env"
+	// AuthModeDatabase authenticates against hashed keys in PostgreSQL.
+	AuthModeDatabase = "database"
+)
+
 // Config is everything the gateway reads from the environment.
 // Anything not listed here is not configuration the gateway uses.
 type Config struct {
 	// Port the HTTP server listens on (GATEWAY_PORT, default 8080).
 	Port int
+	// AuthMode selects where API keys are verified: "env" (default) or
+	// "database". There is no fallback between them — a misconfigured
+	// database mode fails at startup, never silently degrades to env.
+	AuthMode string
 	// APIKey callers must present as a Bearer token
-	// (MINI_AI_DOS_API_KEY, required).
+	// (MINI_AI_DOS_API_KEY — required in env auth mode, unused in
+	// database mode).
 	APIKey string
+	// DatabaseURL is the PostgreSQL connection string (DATABASE_URL —
+	// required in database auth mode, unused in env mode).
+	DatabaseURL string
 	// Provider selects the completion backend (AI_PROVIDER,
 	// "mock" or "openai", default "mock").
 	Provider string
@@ -53,14 +70,9 @@ type Config struct {
 // required variable is reported at once via MissingEnvError — the
 // foundation loader's contract.
 func Load(l *foundationconfig.Loader) (*Config, error) {
-	required, err := l.RequireString("MINI_AI_DOS_API_KEY")
-	if err != nil {
-		return nil, err
-	}
-
 	cfg := &Config{
 		Port:              l.OptionalInt("GATEWAY_PORT", 8080),
-		APIKey:            required["MINI_AI_DOS_API_KEY"],
+		AuthMode:          l.OptionalString("API_KEY_AUTH_MODE", AuthModeEnv),
 		Provider:          l.OptionalString("AI_PROVIDER", ProviderMock),
 		AIBaseURL:         l.OptionalString("AI_BASE_URL", "https://api.openai.com/v1"),
 		AIModel:           l.OptionalString("AI_MODEL", ""),
@@ -69,6 +81,23 @@ func Load(l *foundationconfig.Loader) (*Config, error) {
 		RateLimitEnabled:  parseBool(l.OptionalString("RATE_LIMIT_ENABLED", "false")),
 		RateLimitRequests: l.OptionalInt("RATE_LIMIT_REQUESTS", 60),
 		RateLimitWindow:   time.Duration(l.OptionalInt("RATE_LIMIT_WINDOW", 60)) * time.Second,
+	}
+
+	switch cfg.AuthMode {
+	case AuthModeEnv:
+		required, err := l.RequireString("MINI_AI_DOS_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		cfg.APIKey = required["MINI_AI_DOS_API_KEY"]
+	case AuthModeDatabase:
+		required, err := l.RequireString("DATABASE_URL")
+		if err != nil {
+			return nil, fmt.Errorf("API_KEY_AUTH_MODE=database requires DATABASE_URL: %w", err)
+		}
+		cfg.DatabaseURL = required["DATABASE_URL"]
+	default:
+		return nil, fmt.Errorf("API_KEY_AUTH_MODE must be %q or %q, got %q", AuthModeEnv, AuthModeDatabase, cfg.AuthMode)
 	}
 
 	if cfg.Provider != ProviderMock && cfg.Provider != ProviderOpenAI {

@@ -1,0 +1,174 @@
+openapi: 3.1.0
+info:
+  title: Mini AI-DOS Gateway API
+  version: "0.1.0"
+  description: >
+    The implemented surface of Mini AI-DOS — a small AI gateway.
+    This document describes what the code actually does, nothing more.
+    Streaming, multi-part message content, and per-caller key management
+    are documented non-features. This spec is self-contained: every
+    schema is inline, so there are no $ref targets outside this file.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      description: The single gateway API key (MINI_AI_DOS_API_KEY).
+  schemas:
+    Message:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant]
+        content:
+          type: string
+          minLength: 1
+          description: Plain string only — multi-part content arrays are rejected with 400.
+    ChatCompletionRequest:
+      type: object
+      required: [messages]
+      properties:
+        model:
+          type: string
+          description: Required unless the server sets an AI_MODEL default.
+        messages:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/Message" }
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        max_tokens:
+          type: integer
+          minimum: 1
+        stream:
+          type: boolean
+          description: Must be false or omitted — streaming is not supported (400 if true).
+    Usage:
+      type: object
+      required: [prompt_tokens, completion_tokens, total_tokens]
+      properties:
+        prompt_tokens: { type: integer }
+        completion_tokens: { type: integer }
+        total_tokens: { type: integer }
+    ChatCompletionResponse:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id: { type: string }
+        object: { type: string, const: chat.completion }
+        created: { type: integer, description: Unix seconds }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            required: [index, message, finish_reason]
+            properties:
+              index: { type: integer }
+              message: { $ref: "#/components/schemas/Message" }
+              finish_reason: { type: string }
+        usage:
+          $ref: "#/components/schemas/Usage"
+          description: Present only when the upstream provider reported usage — never fabricated.
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type, code]
+          properties:
+            message: { type: string }
+            type:
+              type: string
+              description: OpenAI-compatible error type (invalid_request_error, authentication_error, permission_error, rate_limit_error, api_error).
+            code:
+              type: string
+              description: Stable Mini AI-DOS error code (validation_error, unauthorized, rate_limited, upstream_error, timeout, internal_error, ...).
+  responses:
+    Unauthorized:
+      description: Missing or invalid gateway API key.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+paths:
+  /health:
+    get:
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: Service is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, provider]
+                properties:
+                  status: { type: string, const: ok }
+                  provider:
+                    { type: string, description: Configured provider name (mock or openai). }
+  /v1/chat/completions:
+    post:
+      summary: Create a chat completion (OpenAI-compatible, non-streaming)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChatCompletionRequest" }
+      responses:
+        "200":
+          description: Completion.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatCompletionResponse" }
+        "400":
+          description: Malformed or invalid request (includes stream=true and upstream-rejected parameters).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Upstream resource not found (e.g. unknown model).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: Request body exceeds the 1 MiB limit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415":
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Gateway rate limit or upstream provider rate limit exceeded. Carries Retry-After when produced by the gateway limiter.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: Upstream provider failure (unreachable, malformed response, or rejected the gateway's upstream credentials).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "504":
+          description: Upstream provider timed out.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }

@@ -25,28 +25,33 @@ jobs:
       # easy to assume — verified locally, not guessed. Each module's
       # own path is targeted explicitly.
       - name: Vet
-        run: go vet ./services/foundation/...
+        run: go vet ./services/foundation/... ./services/gateway/...
 
       - name: Format check
         run: |
-          UNFORMATTED=$(gofmt -l services/foundation/)
+          UNFORMATTED=$(gofmt -l services/foundation/ services/gateway/)
           if [ -n "$UNFORMATTED" ]; then
             echo "The following files are not gofmt-formatted:"
             echo "$UNFORMATTED"
             exit 1
           fi
 
+      # v1.63.4, not v1.61.0: the older pin fails to compile under
+      # modern Go toolchains (x/tools incompatibility) — a real failure
+      # verified on the Phase 0 machine, not a speculative bump.
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.61.0
-          args: --config=.golangci.yml services/foundation/...
+          version: v1.63.4
+          args: --config=.golangci.yml ./services/foundation/... ./services/gateway/...
 
       - name: Build
-        run: go build ./services/foundation/...
+        run: |
+          go build ./services/foundation/...
+          go build ./services/gateway/...
 
       - name: Test
-        run: go test -race -cover ./services/foundation/...
+        run: go test -race -cover ./services/foundation/... ./services/gateway/...
 
   typescript:
     name: TypeScript (apps/, packages/, sdk/)
@@ -79,3 +84,11 @@ jobs:
 
       - name: Test
         run: pnpm run test:coverage
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t mini-ai-dos:ci .

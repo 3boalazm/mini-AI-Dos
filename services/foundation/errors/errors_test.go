@@ -17,6 +17,9 @@ func TestHTTPStatus_KnownCodes(t *testing.T) {
 		CodeForbidden:    http.StatusForbidden,
 		CodeConflict:     http.StatusConflict,
 		CodeInternal:     http.StatusInternalServerError,
+		CodeRateLimited:  http.StatusTooManyRequests,
+		CodeUpstream:     http.StatusBadGateway,
+		CodeTimeout:      http.StatusGatewayTimeout,
 	}
 	for code, want := range cases {
 		got := New(code, "x").HTTPStatus()

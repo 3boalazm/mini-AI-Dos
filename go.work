@@ -1,6 +1,9 @@
 go 1.22
 
-use ./services/foundation
+use (
+	./services/foundation
+	./services/gateway
+)
 
 // Future service modules (services/gateway, services/registry, and so
 // on) are added here as their own epics create them — per the

@@ -6,7 +6,18 @@ export default {
     "scope-enum": [
       2,
       "always",
-      ["foundation", "apps", "packages", "services", "sdk", "specs", "tools", "ci", "docs"],
+      [
+        "foundation",
+        "gateway",
+        "apps",
+        "packages",
+        "services",
+        "sdk",
+        "specs",
+        "tools",
+        "ci",
+        "docs",
+      ],
     ],
   },
 };

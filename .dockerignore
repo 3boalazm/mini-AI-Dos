@@ -1,0 +1,15 @@
+node_modules/
+.turbo/
+.git/
+dist/
+coverage/
+*.tsbuildinfo
+.env
+apps/
+packages/
+sdk/
+docs/
+specs/
+tests/
+tools/
+scripts/

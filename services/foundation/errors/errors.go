@@ -31,6 +31,13 @@ const (
 	CodeForbidden    Code = "forbidden"
 	CodeConflict     Code = "conflict"
 	CodeInternal     Code = "internal_error"
+	// Gateway-facing codes: a request that was rejected by throttling,
+	// failed upstream at a provider, or ran out of time. These live in
+	// the shared registry (not in the gateway) so the code-to-status
+	// mapping stays in one place, per this package's design.
+	CodeRateLimited Code = "rate_limited"
+	CodeUpstream    Code = "upstream_error"
+	CodeTimeout     Code = "timeout"
 )
 
 // httpStatusByCode is the single source of truth for code-to-status
@@ -43,6 +50,9 @@ var httpStatusByCode = map[Code]int{
 	CodeForbidden:    http.StatusForbidden,
 	CodeConflict:     http.StatusConflict,
 	CodeInternal:     http.StatusInternalServerError,
+	CodeRateLimited:  http.StatusTooManyRequests,
+	CodeUpstream:     http.StatusBadGateway,
+	CodeTimeout:      http.StatusGatewayTimeout,
 }
 
 // AppError is the base error type every service-level error should

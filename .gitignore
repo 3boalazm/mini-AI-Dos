@@ -8,6 +8,9 @@ dist/
 
 # Go
 services/foundation/foundation
+services/gateway/gateway
+mini-ai-dos
+mini-ai-dos.exe
 
 # Test coverage
 coverage/

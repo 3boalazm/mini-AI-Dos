@@ -16,6 +16,13 @@ linters:
 linters-settings:
   errcheck:
     check-blank: true
+    # Close/Write failures on response bodies and committed HTTP
+    # responses have no recovery path — excluding them beats scattering
+    # meaningless checks. Everything else stays strictly checked.
+    exclude-functions:
+      - (io.Closer).Close
+      - (io.ReadCloser).Close
+      - (net/http.ResponseWriter).Write
 
 issues:
   exclude-use-default: false

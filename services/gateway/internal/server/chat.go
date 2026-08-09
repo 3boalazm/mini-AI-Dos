@@ -78,7 +78,8 @@ const chatHTML = `<!doctype html>
   .zipbtn:disabled { opacity: .6; cursor: default; }
   .filerow { display: inline-flex; align-items: stretch; margin: .12rem; direction: ltr; }
   .filerow .filebtn { margin: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
-  .dlbtn { border: 1px solid rgba(127,127,127,.4); border-right: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; border-top-right-radius: 5px; border-bottom-right-radius: 5px; background: rgba(127,127,127,.12); color: inherit; cursor: pointer; font-size: .74rem; padding: 0 .45rem; }
+  .dlbtn { border: 1px solid rgba(127,127,127,.4); border-left: 0; border-radius: 0; background: rgba(127,127,127,.12); color: inherit; cursor: pointer; font-size: .74rem; padding: 0 .45rem; }
+  .filerow .dlbtn:last-child { border-top-right-radius: 5px; border-bottom-right-radius: 5px; }
   .preview { margin-top: .5rem; }
   .preview iframe { width: 100%; height: 22rem; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; background: #fff; }
   form { display: flex; gap: .5rem; padding: .8rem 1rem; border-top: 1px solid rgba(127,127,127,.25); }
@@ -571,6 +572,37 @@ const chatHTML = `<!doctype html>
             }).catch(function () {});
         };
         row.appendChild(b);
+
+        // Full-tab preview for HTML: open the tab synchronously (so the
+        // pop-up isn't blocked — a click gesture is required), then fill
+        // it with a sandboxed iframe. sandbox has no allow-same-origin,
+        // so the generated page runs in a unique origin and cannot reach
+        // the gateway's origin or the API key in localStorage.
+        if (/\.html?$/i.test(path)) {
+          var tab = document.createElement('button');
+          tab.type = 'button';
+          tab.className = 'dlbtn';
+          tab.title = 'فتح ' + path + ' في تاب';
+          tab.textContent = '⧉';
+          tab.onclick = function () {
+            var win = window.open('', '_blank');
+            if (win) { win.document.body.textContent = 'Loading…'; }
+            fetch('/v1/agent/runs/' + runId + '/files/' + path, { headers: { 'Authorization': 'Bearer ' + key } })
+              .then(function (r) { return r.text(); })
+              .then(function (content) {
+                if (!win) return;
+                win.document.title = path;
+                win.document.body.textContent = '';
+                win.document.body.style.margin = '0';
+                var frame = win.document.createElement('iframe');
+                frame.setAttribute('sandbox', 'allow-scripts');
+                frame.style.cssText = 'position:fixed;inset:0;border:0;width:100%;height:100%';
+                frame.srcdoc = content;
+                win.document.body.appendChild(frame);
+              }).catch(function () { if (win) win.document.body.textContent = 'فشل التحميل'; });
+          };
+          row.appendChild(tab);
+        }
 
         var dl = document.createElement('button');
         dl.type = 'button';

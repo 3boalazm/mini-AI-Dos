@@ -12,11 +12,16 @@ import (
 // still passes the normal auth and rate-limit middleware. The caller's
 // API key lives only in their browser's localStorage.
 //
-// Beyond plain chat it surfaces the request telemetry the gateway
-// already exposes — model, token usage, duration, request id, and the
-// X-RateLimit-* headers — and renders fenced code blocks with a copy
-// button. No template engine and no JS backticks: this constant is a
-// Go raw string, so backticks cannot appear anywhere in the page.
+// The UI is a five-state machine — idle / working / waiting / error /
+// done — driven by the real request lifecycle (there is no agent
+// runtime behind it yet, so the states map to what actually happens:
+// an in-flight completion with abort, a key that needs the user, a
+// failed call with retry). When an agent runtime lands in later
+// phases, it plugs into these same states without a UI rewrite.
+//
+// No template engine and no JS backticks: this constant is a Go raw
+// string, so a literal backtick would terminate it — the code-fence
+// marker is assembled from char codes instead.
 const chatHTML = `<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -28,16 +33,35 @@ const chatHTML = `<!doctype html>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
   body { font-family: system-ui, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100dvh; }
-  header { padding: .8rem 1rem; border-bottom: 1px solid rgba(127,127,127,.25); display: flex; justify-content: space-between; align-items: center; gap: .6rem; }
+  header { padding: .7rem 1rem; border-bottom: 1px solid rgba(127,127,127,.25); display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
   header h1 { font-size: 1.05rem; margin: 0; }
-  #prov { font-size: .72rem; opacity: .65; direction: ltr; }
-  header button { font-size: .8rem; padding: .3rem .7rem; border-radius: 6px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
+  #statuschip { font-size: .72rem; padding: .18rem .6rem; border-radius: 999px; border: 1px solid rgba(127,127,127,.35); opacity: .85; }
+  #statuschip.working { color: #3b82f6; border-color: #3b82f6; }
+  #statuschip.waiting { color: #d97706; border-color: #d97706; }
+  #statuschip.error { color: #d33; border-color: #d33; }
+  #statuschip.done { color: #16a34a; border-color: #16a34a; }
+  #prov { font-size: .72rem; opacity: .6; direction: ltr; margin-inline-start: auto; }
+  header button { font-size: .78rem; padding: .3rem .7rem; border-radius: 6px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
   #log { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: .6rem; }
   .msg { max-width: 46rem; padding: .6rem .9rem; border-radius: 12px; line-height: 1.6; }
   .msg .txt { white-space: pre-wrap; }
   .user { align-self: flex-start; background: rgba(59,130,246,.18); }
   .assistant { align-self: flex-end; background: rgba(127,127,127,.15); }
   .err { align-self: center; color: #d33; font-size: .85rem; }
+  .card { align-self: flex-end; background: rgba(127,127,127,.12); border: 1px solid rgba(127,127,127,.25); border-radius: 12px; padding: .7rem .9rem; min-width: 15rem; }
+  .card .ctitle { font-size: .85rem; font-weight: 600; margin-bottom: .45rem; }
+  .card.working .ctitle { color: #3b82f6; }
+  .card.waiting .ctitle { color: #d97706; }
+  .card.error .ctitle { color: #d33; }
+  .steps { display: flex; flex-direction: column; gap: .25rem; font-size: .82rem; margin-bottom: .55rem; }
+  .step { opacity: .5; }
+  .step.active { opacity: 1; color: #3b82f6; }
+  .step.done { opacity: .8; color: #16a34a; }
+  .cmsg { font-size: .82rem; margin-bottom: .55rem; }
+  .actions { display: flex; gap: .5rem; }
+  .actions button { font-size: .78rem; padding: .3rem .9rem; border-radius: 6px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
+  .actions .primary { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+  .actions .danger { border-color: #d33; color: #d33; }
   .code { position: relative; direction: ltr; text-align: left; margin: .45rem 0; }
   .code pre { overflow-x: auto; background: rgba(0,0,0,.25); padding: .7rem .8rem; padding-top: 1.6rem; border-radius: 8px; margin: 0; font-size: .85rem; }
   @media (prefers-color-scheme: light) { .code pre { background: rgba(0,0,0,.07); } }
@@ -52,8 +76,10 @@ const chatHTML = `<!doctype html>
 </head>
 <body>
 <header>
-  <h1>Mini AI-DOS — شات</h1>
+  <h1>Mini AI-DOS</h1>
+  <span id="statuschip">جاهز</span>
   <span id="prov"></span>
+  <button id="newbtn" type="button">محادثة جديدة</button>
   <button id="keybtn" type="button">تغيير المفتاح</button>
 </header>
 <div id="log"></div>
@@ -68,11 +94,30 @@ const chatHTML = `<!doctype html>
   var form = document.getElementById('f');
   var input = document.getElementById('in');
   var sendBtn = document.getElementById('send');
+  var chip = document.getElementById('statuschip');
   var msgs = [];
   var memKey = '';
 
-  // Strict privacy modes make localStorage throw; fall back to an
-  // in-memory key so the page still works for the session.
+  // ---- The status machine. Everything the UI shows derives from
+  // state.status; adding future agent states means adding a label and
+  // a card builder, not restructuring the page.
+  var state = { status: 'idle', lastText: '', ctrl: null, card: null };
+  var LABELS = { idle: 'جاهز', working: 'شغال…', waiting: 'مستني موافقتك', error: 'خطأ', done: 'اكتمل ✓' };
+
+  function setStatus(s) {
+    state.status = s;
+    chip.textContent = LABELS[s] || s;
+    chip.className = s;
+    sendBtn.disabled = (s === 'working');
+    if (s === 'done') { setTimeout(function () { if (state.status === 'done') setStatus('idle'); }, 2500); }
+  }
+
+  function dropCard() {
+    if (state.card) { state.card.remove(); state.card = null; }
+  }
+
+  // ---- Key handling (localStorage with in-memory fallback for
+  // strict privacy modes that make storage throw).
   function loadKey() {
     try { return localStorage.getItem(KEY) || memKey; } catch (e) { return memKey; }
   }
@@ -84,19 +129,20 @@ const chatHTML = `<!doctype html>
     memKey = '';
     try { localStorage.removeItem(KEY); } catch (e) {}
   }
-  function getKey(forceAsk) {
-    var k = loadKey();
-    if (!k || forceAsk) {
-      k = (window.prompt('حط الـ API key بتاع الـ gateway (بيتخزن في متصفحك بس):') || '').trim();
-      if (k) storeKey(k);
-    }
+  function promptKey() {
+    var k = (window.prompt('حط الـ API key بتاع الـ gateway (بيتخزن في متصفحك بس):') || '').trim();
+    if (k) storeKey(k);
     return k;
   }
 
-  // Active provider in the header — the same fact /health reports.
   fetch('/health').then(function (r) { return r.json(); }).then(function (h) {
     if (h && h.provider) { document.getElementById('prov').textContent = 'provider: ' + h.provider; }
   }).catch(function () {});
+
+  // ---- Rendering helpers (all textContent — model output is never
+  // parsed as HTML). The fence marker is built from char codes
+  // because this page lives inside a Go raw string.
+  var FENCE = String.fromCharCode(96, 96, 96);
 
   function copyText(txt, btn) {
     function done() {
@@ -104,9 +150,6 @@ const chatHTML = `<!doctype html>
       btn.textContent = 'اتنسخ ✓';
       setTimeout(function () { btn.textContent = old; }, 1500);
     }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(txt).then(done).catch(function () { fallback(); });
-    } else { fallback(); }
     function fallback() {
       var ta = document.createElement('textarea');
       ta.value = txt;
@@ -115,14 +158,11 @@ const chatHTML = `<!doctype html>
       try { document.execCommand('copy'); done(); } catch (e) {}
       ta.remove();
     }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(done).catch(fallback);
+    } else { fallback(); }
   }
 
-  // Renders message text into el, turning fenced code blocks into
-  // copyable ones. Built entirely with textContent — nothing the model
-  // returns is ever parsed as HTML. The fence marker is built from
-  // char codes because this whole page lives in a Go raw string,
-  // where a literal backtick would end the string.
-  var FENCE = String.fromCharCode(96, 96, 96);
   function renderContent(el, text) {
     var parts = text.split(FENCE);
     for (var i = 0; i < parts.length; i++) {
@@ -170,9 +210,9 @@ const chatHTML = `<!doctype html>
     d.className = 'msg ' + role;
     if (role === 'assistant') { renderContent(d, text); }
     else {
-      d.dir = 'auto';
       var t = document.createElement('div');
       t.className = 'txt';
+      t.dir = 'auto';
       t.textContent = text;
       d.appendChild(t);
     }
@@ -181,8 +221,6 @@ const chatHTML = `<!doctype html>
     return d;
   }
 
-  // The per-reply telemetry line: model, tokens, duration, rate-limit
-  // budget, request id — everything the gateway reports about the call.
   function addMeta(bubble, data, resp, durMs) {
     var bits = [];
     if (data.model) { bits.push(data.model); }
@@ -199,33 +237,119 @@ const chatHTML = `<!doctype html>
     bubble.appendChild(m);
   }
 
-  document.getElementById('keybtn').onclick = function () { getKey(true); };
+  // ---- Cards: one per non-idle status, all built the same way.
+  function card(kind, title) {
+    dropCard();
+    var c = document.createElement('div');
+    c.className = 'card ' + kind;
+    var h = document.createElement('div');
+    h.className = 'ctitle';
+    h.textContent = title;
+    c.appendChild(h);
+    log.appendChild(c);
+    log.scrollTop = log.scrollHeight;
+    state.card = c;
+    return c;
+  }
 
-  form.onsubmit = function (e) {
-    e.preventDefault();
-    var text = input.value.trim();
+  function actionBtn(label, cls, fn) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.onclick = fn;
+    return b;
+  }
+
+  function workingCard() {
+    var c = card('working', '● شغال');
+    var steps = document.createElement('div');
+    steps.className = 'steps';
+    var s1 = document.createElement('div'); s1.className = 'step done'; s1.textContent = '✓ جهزت الطلب';
+    var s2 = document.createElement('div'); s2.className = 'step active'; s2.textContent = '● مستني رد الموديل';
+    var s3 = document.createElement('div'); s3.className = 'step'; s3.textContent = '○ معالجة الرد';
+    steps.appendChild(s1); steps.appendChild(s2); steps.appendChild(s3);
+    c.appendChild(steps);
+    var a = document.createElement('div');
+    a.className = 'actions';
+    a.appendChild(actionBtn('إيقاف', 'danger', function () {
+      if (state.ctrl) state.ctrl.abort();
+    }));
+    c.appendChild(a);
+    return { gotHeaders: function () {
+      s2.className = 'step done'; s2.textContent = '✓ وصل رد الموديل';
+      s3.className = 'step active'; s3.textContent = '● معالجة الرد';
+    } };
+  }
+
+  function waitingCard(msg, onApprove) {
+    setStatus('waiting');
+    var c = card('waiting', '⏸ محتاج حاجة منك');
+    var m = document.createElement('div');
+    m.className = 'cmsg';
+    m.textContent = msg;
+    c.appendChild(m);
+    var a = document.createElement('div');
+    a.className = 'actions';
+    a.appendChild(actionBtn('أدخل المفتاح', 'primary', function () {
+      var k = promptKey();
+      if (k) { dropCard(); onApprove(); }
+    }));
+    a.appendChild(actionBtn('إلغاء', '', function () { dropCard(); setStatus('idle'); }));
+    c.appendChild(a);
+  }
+
+  function errorCard(msg) {
+    setStatus('error');
+    var c = card('error', '⚠ حصل خطأ');
+    var m = document.createElement('div');
+    m.className = 'cmsg';
+    m.textContent = msg;
+    c.appendChild(m);
+    var a = document.createElement('div');
+    a.className = 'actions';
+    a.appendChild(actionBtn('إعادة المحاولة', 'primary', function () {
+      dropCard();
+      send(state.lastText);
+    }));
+    a.appendChild(actionBtn('إلغاء', '', function () { dropCard(); setStatus('idle'); }));
+    c.appendChild(a);
+  }
+
+  // ---- The one flow: send. Every status transition happens here.
+  function send(text) {
     if (!text) return;
-    var key = getKey(false);
-    if (!key) { add('err', 'محتاج API key الأول — دوس "تغيير المفتاح"'); return; }
-    input.value = '';
-    sendBtn.disabled = true;
+    var key = loadKey();
+    if (!key) {
+      state.lastText = text;
+      waitingCard('محتاج الـ API key عشان أكمل.', function () { send(text); });
+      return;
+    }
+    state.lastText = text;
     msgs.push({ role: 'user', content: text });
     add('user', text);
-    var pending = add('assistant', '…');
+    setStatus('working');
+    var w = workingCard();
     var t0 = Date.now();
+    state.ctrl = new AbortController();
     fetch('/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-      body: JSON.stringify({ messages: msgs })
+      body: JSON.stringify({ messages: msgs }),
+      signal: state.ctrl.signal
     }).then(function (r) {
+      w.gotHeaders();
       return r.json().then(function (data) { return { ok: r.ok, status: r.status, resp: r, data: data }; });
     }).then(function (res) {
-      pending.remove();
+      dropCard();
       if (!res.ok) {
         msgs.pop();
-        var m = (res.data && res.data.error && res.data.error.message) || ('HTTP ' + res.status);
-        add('err', m);
-        if (res.status === 401) { clearKey(); }
+        if (res.status === 401) {
+          clearKey();
+          waitingCard('المفتاح مرفوض — أدخل مفتاح صحيح عشان أكمل.', function () { send(state.lastText); });
+          return;
+        }
+        errorCard((res.data && res.data.error && res.data.error.message) || ('HTTP ' + res.status));
         return;
       }
       var reply = res.data.choices[0].message;
@@ -233,19 +357,51 @@ const chatHTML = `<!doctype html>
       var bubble = add('assistant', reply.content);
       addMeta(bubble, res.data, res.resp, Date.now() - t0);
       log.scrollTop = log.scrollHeight;
+      setStatus('done');
     }).catch(function (err) {
+      dropCard();
       msgs.pop();
-      pending.remove();
-      add('err', 'فشل الاتصال: ' + err.message);
+      if (err && err.name === 'AbortError') {
+        input.value = state.lastText;
+        setStatus('idle');
+        input.focus();
+        return;
+      }
+      errorCard('فشل الاتصال: ' + err.message);
     }).finally(function () {
-      sendBtn.disabled = false;
+      state.ctrl = null;
+      if (state.status === 'working') setStatus('idle');
       input.focus();
     });
+  }
+
+  // ---- Controls: Send, Stop (in the working card), Retry (in the
+  // error card), Approve/Cancel (in the waiting card), New Chat.
+  form.onsubmit = function (e) {
+    e.preventDefault();
+    if (state.status === 'working') return;
+    var text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    send(text);
   };
+
+  document.getElementById('newbtn').onclick = function () {
+    if (state.ctrl) state.ctrl.abort();
+    msgs = [];
+    log.textContent = '';
+    state.card = null;
+    setStatus('idle');
+    input.focus();
+  };
+
+  document.getElementById('keybtn').onclick = function () { promptKey(); };
 
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
   });
+
+  setStatus('idle');
 })();
 </script>
 </body>

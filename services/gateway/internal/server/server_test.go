@@ -88,6 +88,9 @@ func TestChat_ServesChatPage(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "/v1/chat/completions") {
 		t.Error("chat page should call the completions API")
 	}
+	if !strings.Contains(rec.Body.String(), "statuschip") {
+		t.Error("chat page should carry the status-machine chip the UI architecture is built on")
+	}
 }
 
 func TestRoot_UnknownPathStays404(t *testing.T) {

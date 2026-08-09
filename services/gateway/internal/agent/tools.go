@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -58,8 +59,10 @@ func parseToolCall(raw string) *toolCall {
 // execTool runs one tool against the workspace and returns a result
 // string. Tool-level failures come back as "ERROR: ..." results, not
 // Go errors: the model reads them and can recover on the next turn.
-func execTool(ws *Workspace, tc *toolCall) string {
+func execTool(ctx context.Context, ws *Workspace, tc *toolCall) string {
 	switch tc.Tool {
+	case "run_command":
+		return ws.RunCommand(ctx, tc.str("command"))
 	case "read_file":
 		c, err := ws.ReadFile(tc.str("path"))
 		if err != nil {

@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	apperrors "github.com/ai-dos/foundation/errors"
 	"github.com/ai-dos/foundation/logging"
 	"github.com/ai-dos/gateway/internal/provider"
 )
@@ -44,7 +46,16 @@ const (
 	// maxRuns caps retained runs (and their on-disk workspaces); the
 	// oldest is evicted past this.
 	maxRuns = 25
+	// maxLogEntries caps the per-run tool-activity log kept for the UI.
+	maxLogEntries = 40
 )
+
+// rateBackoff is the wait schedule between retries when the upstream
+// returns a rate-limit error — the agent bursts many calls and would
+// otherwise die on a free-tier per-minute cap. Each entry is one more
+// retry; the list length is the retry count. Overridable per engine
+// for fast tests.
+var rateBackoff = []time.Duration{5 * time.Second, 12 * time.Second, 20 * time.Second, 30 * time.Second}
 
 // Status is the run lifecycle. The progression is fixed:
 // planning → executing → inspecting → (fixing) → completed | failed.
@@ -80,6 +91,7 @@ type Run struct {
 	Status  Status   `json:"status"`
 	Steps   []Step   `json:"steps"`
 	Files   []string `json:"files"`
+	Log     []string `json:"log,omitempty"`
 	Result  string   `json:"result,omitempty"`
 	Error   string   `json:"error,omitempty"`
 	Created int64    `json:"created"`
@@ -94,6 +106,7 @@ type Engine struct {
 	model    string
 	baseDir  string
 	log      *logging.Logger
+	backoff  []time.Duration
 
 	mu   sync.RWMutex
 	runs map[string]*Run
@@ -106,7 +119,7 @@ func NewEngine(p provider.Provider, model, baseDir string, log *logging.Logger) 
 	if baseDir == "" {
 		baseDir = filepath.Join(os.TempDir(), "aidos-workspaces")
 	}
-	return &Engine{provider: p, model: model, baseDir: baseDir, log: log, runs: make(map[string]*Run)}
+	return &Engine{provider: p, model: model, baseDir: baseDir, log: log, backoff: rateBackoff, runs: make(map[string]*Run)}
 }
 
 // Start validates and launches a run, returning its first snapshot.
@@ -154,6 +167,7 @@ func (e *Engine) Get(id string) *Run {
 	cp.ws = nil
 	cp.Steps = append([]Step(nil), r.Steps...)
 	cp.Files = append([]string(nil), r.Files...)
+	cp.Log = append([]string(nil), r.Log...)
 	return &cp
 }
 
@@ -214,6 +228,34 @@ func (e *Engine) update(id string, fn func(*Run)) {
 	}
 }
 
+// appendLog records one tool action on the run's activity log, capped
+// so a long run doesn't grow it without bound.
+func (e *Engine) appendLog(id, line string) {
+	e.update(id, func(r *Run) {
+		r.Log = append(r.Log, line)
+		if len(r.Log) > maxLogEntries {
+			r.Log = r.Log[len(r.Log)-maxLogEntries:]
+		}
+	})
+}
+
+// toolActivity summarizes a tool call for the activity log — verb plus
+// its most telling argument, never full file contents.
+func toolActivity(tc *toolCall) string {
+	switch tc.Tool {
+	case "run_command":
+		return "$ " + truncate(tc.str("command"), 80)
+	case "read_file", "write_file", "edit_file":
+		return tc.Tool + ": " + tc.str("path")
+	case "search_files":
+		return "search: " + tc.str("query")
+	case "list_files":
+		return "list_files"
+	default:
+		return tc.Tool
+	}
+}
+
 // wsOf returns a run's workspace handle (set once at Start).
 func (e *Engine) wsOf(id string) *Workspace {
 	e.mu.RLock()
@@ -256,7 +298,7 @@ func (e *Engine) loop(ctx context.Context, id, task string) {
 	var summaries []string
 	for i, title := range titles {
 		e.update(id, func(r *Run) { r.Steps[i].Status = StepActive })
-		summary, err := e.executeStep(ctx, ws, task, titles, i)
+		summary, err := e.executeStep(ctx, id, ws, task, titles, i)
 		if err != nil {
 			fail(err)
 			return
@@ -288,7 +330,7 @@ func (e *Engine) loop(ctx context.Context, id, task string) {
 	if !inspectionPassed(verdict) {
 		e.update(id, func(r *Run) { r.Status = StatusFixing })
 		if hasFiles {
-			if err := e.fixWithTools(ctx, ws, task, verdict); err != nil {
+			if err := e.fixWithTools(ctx, id, ws, task, verdict); err != nil {
 				fail(err)
 				return
 			}
@@ -314,8 +356,28 @@ func (e *Engine) loop(ctx context.Context, id, task string) {
 	e.log.Info("agent run completed", "run_id", id, "steps", len(titles), "files", len(files), "fixed", !inspectionPassed(verdict))
 }
 
-// chatMessages is one bounded multi-turn model call through the seam.
+// chatMessages is one model call, retried with backoff on upstream
+// rate-limit errors — a run bursts many calls and would otherwise die
+// on a free-tier per-minute cap. Backoff waits respect ctx, so a
+// cancelled run stops waiting immediately.
 func (e *Engine) chatMessages(ctx context.Context, msgs []provider.Message) (string, error) {
+	for attempt := 0; ; attempt++ {
+		out, err := e.chatOnce(ctx, msgs)
+		if err == nil || !isRateLimited(err) || attempt >= len(e.backoff) {
+			return out, err
+		}
+		wait := e.backoff[attempt]
+		e.log.Info("agent backing off on upstream rate limit", "attempt", attempt+1, "wait", wait.String())
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+// chatOnce is a single multi-turn model call through the seam.
+func (e *Engine) chatOnce(ctx context.Context, msgs []provider.Message) (string, error) {
 	resp, err := e.provider.ChatCompletion(ctx, &provider.ChatRequest{Model: e.model, Messages: msgs})
 	if err != nil {
 		return "", err
@@ -324,6 +386,16 @@ func (e *Engine) chatMessages(ctx context.Context, msgs []provider.Message) (str
 		return "", fmt.Errorf("upstream returned no choices")
 	}
 	return resp.Choices[0].Message.Content, nil
+}
+
+// isRateLimited reports whether err is (or wraps) an upstream
+// rate-limit AppError.
+func isRateLimited(err error) bool {
+	var ae *apperrors.AppError
+	if stderrors.As(err, &ae) {
+		return ae.Code == apperrors.CodeRateLimited
+	}
+	return false
 }
 
 // chat is a single system+user exchange.
@@ -347,19 +419,20 @@ func (e *Engine) plan(ctx context.Context, task string) ([]string, error) {
 	return []string{"تنفيذ المهمة"}, nil
 }
 
-const execToolSystem = `You are the execution module of a build agent with a file workspace. You work by calling tools, one per turn. Reply with ONLY one JSON object, no prose, no code fences:
+const execToolSystem = `You are the execution module of a build agent with a file workspace and a shell. You work by calling tools, one per turn. Reply with ONLY one JSON object, no prose, no code fences:
 {"tool":"write_file","args":{"path":"index.html","content":"..."}}
 {"tool":"read_file","args":{"path":"index.html"}}
 {"tool":"edit_file","args":{"path":"index.html","find":"old","replace":"new"}}
 {"tool":"list_files","args":{}}
 {"tool":"search_files","args":{"query":"navbar"}}
+{"tool":"run_command","args":{"command":"ls -la"}}
 When the current step is fully done, reply:
 {"tool":"done","args":{"summary":"what you did"}}
-Rules: relative paths only; produce real, complete file contents; do this step's work then call done.`
+Rules: relative paths only; produce real, complete file contents; run_command runs in the workspace (install/delete/git are not available yet); do this step's work then call done.`
 
 // executeStep runs the tool loop for one plan step and returns a short
 // summary of what it did.
-func (e *Engine) executeStep(ctx context.Context, ws *Workspace, task string, titles []string, i int) (string, error) {
+func (e *Engine) executeStep(ctx context.Context, id string, ws *Workspace, task string, titles []string, i int) (string, error) {
 	files, _ := ws.List()
 	var u strings.Builder
 	u.WriteString("TASK:\n" + task + "\n\nPLAN:\n")
@@ -390,7 +463,8 @@ func (e *Engine) executeStep(ctx context.Context, ws *Workspace, task string, ti
 			}
 			return titles[i], nil
 		}
-		result := execTool(ws, tc)
+		e.appendLog(id, toolActivity(tc))
+		result := execTool(ctx, ws, tc)
 		msgs = append(msgs,
 			provider.Message{Role: provider.RoleAssistant, Content: out},
 			provider.Message{Role: provider.RoleUser, Content: "TOOL RESULT:\n" + truncate(result, maxToolResult)},
@@ -405,9 +479,9 @@ func (e *Engine) inspect(ctx context.Context, task, deliverable string) (string,
 	return e.chat(ctx, inspectSystem, "TASK:\n"+task+"\n\nDELIVERABLE:\n"+deliverable)
 }
 
-const fixToolSystem = `You are the fixing module of a build agent with a file workspace. Fix the issues from the inspection notes by editing files. Reply with ONLY one JSON object per turn (same tools as execution: read_file, write_file, edit_file, list_files, search_files). When the issues are fixed, reply {"tool":"done","args":{"summary":"..."}}. Relative paths only.`
+const fixToolSystem = `You are the fixing module of a build agent with a file workspace and a shell. Fix the issues from the inspection notes by editing files. Reply with ONLY one JSON object per turn (same tools as execution: read_file, write_file, edit_file, list_files, search_files, run_command). When the issues are fixed, reply {"tool":"done","args":{"summary":"..."}}. Relative paths only.`
 
-func (e *Engine) fixWithTools(ctx context.Context, ws *Workspace, task, notes string) error {
+func (e *Engine) fixWithTools(ctx context.Context, id string, ws *Workspace, task, notes string) error {
 	files, _ := ws.List()
 	msgs := []provider.Message{
 		{Role: provider.RoleSystem, Content: fixToolSystem},
@@ -422,7 +496,8 @@ func (e *Engine) fixWithTools(ctx context.Context, ws *Workspace, task, notes st
 		if tc == nil || tc.Tool == "done" {
 			return nil
 		}
-		result := execTool(ws, tc)
+		e.appendLog(id, toolActivity(tc))
+		result := execTool(ctx, ws, tc)
 		msgs = append(msgs,
 			provider.Message{Role: provider.RoleAssistant, Content: out},
 			provider.Message{Role: provider.RoleUser, Content: "TOOL RESULT:\n" + truncate(result, maxToolResult)},

@@ -4,9 +4,11 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	apperrors "github.com/ai-dos/foundation/errors"
 	"github.com/ai-dos/foundation/logging"
 	"github.com/ai-dos/gateway/internal/provider"
 )
@@ -156,6 +158,83 @@ func TestRun_ToolLoop_ProducesFiles(t *testing.T) {
 	}
 	if content != "<h1>hi</h1>" {
 		t.Errorf("file content: got %q", content)
+	}
+}
+
+// flakyProvider fails with a rate-limit error the first failN calls,
+// then serves from responses.
+type flakyProvider struct {
+	mu        sync.Mutex
+	failN     int
+	calls     int
+	responses []string
+	served    int
+}
+
+func (f *flakyProvider) Name() string { return "flaky" }
+
+func (f *flakyProvider) ChatCompletion(_ context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls <= f.failN {
+		return nil, apperrors.New(apperrors.CodeRateLimited, "upstream provider rate limit exceeded")
+	}
+	i := f.served
+	if i >= len(f.responses) {
+		i = len(f.responses) - 1
+	}
+	f.served++
+	return &provider.ChatResponse{
+		Model:   req.Model,
+		Choices: []provider.Choice{{Message: provider.Message{Role: provider.RoleAssistant, Content: f.responses[i]}}},
+	}, nil
+}
+
+func TestChatMessages_RetriesRateLimit(t *testing.T) {
+	p := &flakyProvider{failN: 2, responses: []string{"recovered"}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	e.backoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond} // fast
+
+	out, err := e.chatMessages(context.Background(), []provider.Message{{Role: provider.RoleUser, Content: "hi"}})
+	if err != nil {
+		t.Fatalf("should have recovered after retries: %v", err)
+	}
+	if out != "recovered" {
+		t.Errorf("got %q, want recovered", out)
+	}
+	if p.calls != 3 {
+		t.Errorf("expected 2 failures + 1 success = 3 calls, got %d", p.calls)
+	}
+}
+
+func TestChatMessages_RateLimitExhausted(t *testing.T) {
+	p := &flakyProvider{failN: 100, responses: []string{"never"}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	e.backoff = []time.Duration{time.Millisecond} // one retry, then give up
+
+	if _, err := e.chatMessages(context.Background(), []provider.Message{{Role: provider.RoleUser, Content: "hi"}}); err == nil {
+		t.Fatal("should return the rate-limit error after exhausting retries")
+	}
+	if p.calls != 2 {
+		t.Errorf("expected initial + 1 retry = 2 calls, got %d", p.calls)
+	}
+}
+
+func TestRun_ActivityLogRecordsTools(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`["build"]`,
+		`{"tool":"write_file","args":{"path":"a.txt","content":"x"}}`,
+		`{"tool":"run_command","args":{"command":"echo hi"}}`,
+		`{"tool":"done","args":{"summary":"done"}}`,
+		"OK",
+	}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	run, _ := e.Start("t")
+	final := waitFor(t, e, run.ID, StatusCompleted)
+	joined := strings.Join(final.Log, "\n")
+	if !strings.Contains(joined, "write_file: a.txt") || !strings.Contains(joined, "$ echo hi") {
+		t.Errorf("activity log should record tool actions, got %v", final.Log)
 	}
 }
 

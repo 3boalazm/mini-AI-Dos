@@ -58,6 +58,9 @@ const chatHTML = `<!doctype html>
   .step.active { opacity: 1; color: #3b82f6; }
   .step.done { opacity: .8; color: #16a34a; }
   .cmsg { font-size: .82rem; margin-bottom: .55rem; }
+  .activity { font-family: ui-monospace, monospace; font-size: .72rem; direction: ltr; text-align: left; max-height: 8rem; overflow-y: auto; background: rgba(0,0,0,.18); border-radius: 6px; padding: .35rem .5rem; margin-bottom: .5rem; }
+  @media (prefers-color-scheme: light) { .activity { background: rgba(0,0,0,.05); } }
+  .activity div { white-space: pre-wrap; opacity: .85; }
   .actions { display: flex; gap: .5rem; }
   .actions button { font-size: .78rem; padding: .3rem .9rem; border-radius: 6px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
   .actions .primary { background: #3b82f6; border-color: #3b82f6; color: #fff; }
@@ -425,6 +428,10 @@ const chatHTML = `<!doctype html>
     var stepsEl = document.createElement('div');
     stepsEl.className = 'steps';
     c.appendChild(stepsEl);
+    var activityEl = document.createElement('div');
+    activityEl.className = 'activity';
+    activityEl.style.display = 'none';
+    c.appendChild(activityEl);
     var a = document.createElement('div');
     a.className = 'actions';
     a.appendChild(actionBtn('إيقاف', 'danger', function () {
@@ -456,7 +463,7 @@ const chatHTML = `<!doctype html>
         return;
       }
       state.runId = res.data.id;
-      pollRun(key, phase, stepsEl, t0);
+      pollRun(key, phase, stepsEl, activityEl, t0);
     }).catch(function (err) {
       dropCard();
       errorCard('فشل الاتصال: ' + err.message);
@@ -519,7 +526,19 @@ const chatHTML = `<!doctype html>
     bubble.appendChild(box);
   }
 
-  function pollRun(key, phase, stepsEl, t0) {
+  function renderActivity(el, lines) {
+    if (!lines || !lines.length) return;
+    el.style.display = '';
+    el.textContent = '';
+    for (var i = 0; i < lines.length; i++) {
+      var d = document.createElement('div');
+      d.textContent = lines[i];
+      el.appendChild(d);
+    }
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function pollRun(key, phase, stepsEl, activityEl, t0) {
     state.poll = setTimeout(function tick() {
       fetch('/v1/agent/runs/' + state.runId, { headers: { 'Authorization': 'Bearer ' + key } })
         .then(function (r) { return r.json(); })
@@ -527,6 +546,7 @@ const chatHTML = `<!doctype html>
           if (!run || !run.status) { throw new Error('bad snapshot'); }
           if (PHASES[run.status]) { phase.textContent = PHASES[run.status]; }
           if (run.steps && run.steps.length) { renderSteps(stepsEl, run.steps); }
+          renderActivity(activityEl, run.log);
           if (run.status === 'completed') {
             state.runId = null;
             var doneId = run.id;

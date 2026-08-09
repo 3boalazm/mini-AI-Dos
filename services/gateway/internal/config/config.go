@@ -5,8 +5,10 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	foundationconfig "github.com/ai-dos/foundation/config"
@@ -26,6 +28,15 @@ const (
 	// AuthModeDatabase authenticates against hashed keys in PostgreSQL.
 	AuthModeDatabase = "database"
 )
+
+// ProviderConfig is one upstream in the failover chain, with its API
+// key already resolved from the environment.
+type ProviderConfig struct {
+	Name    string
+	BaseURL string
+	APIKey  string
+	Model   string
+}
 
 // Config is everything the gateway reads from the environment.
 // Anything not listed here is not configuration the gateway uses.
@@ -65,6 +76,12 @@ type Config struct {
 	// loop writes into (AGENT_WORKSPACE_DIR). Empty falls back to a
 	// temp directory chosen by the agent engine.
 	AgentWorkspaceDir string
+	// AIProviders is the ordered failover chain (AI_PROVIDERS, a JSON
+	// array). When non-empty the gateway runs in failover mode: each
+	// request tries these upstreams in order until one succeeds, and
+	// AI_PROVIDER / AI_API_KEY / AI_BASE_URL are ignored. Empty means
+	// single-provider mode (AI_PROVIDER).
+	AIProviders []ProviderConfig
 	// Env selects log format: "development" (text) or anything else
 	// (JSON). APP_ENV, default "development".
 	Env string
@@ -112,16 +129,32 @@ func Load(l *foundationconfig.Loader) (*Config, error) {
 		return nil, fmt.Errorf("API_KEY_AUTH_MODE must be %q or %q, got %q", AuthModeEnv, AuthModeDatabase, cfg.AuthMode)
 	}
 
-	if cfg.Provider != ProviderMock && cfg.Provider != ProviderOpenAI {
-		return nil, fmt.Errorf("AI_PROVIDER must be %q or %q, got %q", ProviderMock, ProviderOpenAI, cfg.Provider)
-	}
-
-	if cfg.Provider == ProviderOpenAI {
-		upstream, err := l.RequireString("AI_API_KEY")
+	// Failover mode takes precedence: when AI_PROVIDERS is set, the
+	// gateway routes through that chain and the single-provider
+	// variables (AI_PROVIDER / AI_API_KEY / AI_BASE_URL) are ignored.
+	if raw := strings.TrimSpace(l.OptionalString("AI_PROVIDERS", "")); raw != "" {
+		providers, err := parseProviders(l, raw)
 		if err != nil {
-			return nil, fmt.Errorf("AI_PROVIDER=openai requires AI_API_KEY: %w", err)
+			return nil, err
 		}
-		cfg.AIAPIKey = upstream["AI_API_KEY"]
+		cfg.AIProviders = providers
+		// Callers may omit "model" and there is no single upstream model;
+		// a sentinel keeps request validation happy — the failover
+		// provider overrides it per upstream anyway.
+		if cfg.AIModel == "" {
+			cfg.AIModel = "auto"
+		}
+	} else {
+		if cfg.Provider != ProviderMock && cfg.Provider != ProviderOpenAI {
+			return nil, fmt.Errorf("AI_PROVIDER must be %q or %q, got %q", ProviderMock, ProviderOpenAI, cfg.Provider)
+		}
+		if cfg.Provider == ProviderOpenAI {
+			upstream, err := l.RequireString("AI_API_KEY")
+			if err != nil {
+				return nil, fmt.Errorf("AI_PROVIDER=openai requires AI_API_KEY: %w", err)
+			}
+			cfg.AIAPIKey = upstream["AI_API_KEY"]
+		}
 	}
 
 	if cfg.Port <= 0 || cfg.Port > 65535 {
@@ -138,6 +171,41 @@ func Load(l *foundationconfig.Loader) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// parseProviders decodes the AI_PROVIDERS JSON array and resolves each
+// entry's API key. Keys are referenced by env-var name (key_env) so the
+// JSON blob itself carries no secrets and can be committed as an
+// example; a literal "key" is also accepted for convenience.
+func parseProviders(l *foundationconfig.Loader, raw string) ([]ProviderConfig, error) {
+	var entries []struct {
+		Name    string `json:"name"`
+		BaseURL string `json:"base_url"`
+		KeyEnv  string `json:"key_env"`
+		Key     string `json:"key"`
+		Model   string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, fmt.Errorf("AI_PROVIDERS must be a JSON array of provider objects: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("AI_PROVIDERS is an empty array; set AI_PROVIDER instead, or add providers")
+	}
+	out := make([]ProviderConfig, 0, len(entries))
+	for i, e := range entries {
+		if e.Name == "" || e.BaseURL == "" || e.Model == "" {
+			return nil, fmt.Errorf("AI_PROVIDERS[%d] requires name, base_url, and model", i)
+		}
+		key := e.Key
+		if e.KeyEnv != "" {
+			key = l.OptionalString(e.KeyEnv, "")
+		}
+		if key == "" {
+			return nil, fmt.Errorf("AI_PROVIDERS[%d] (%s): API key missing (env %q is unset and no literal key given)", i, e.Name, e.KeyEnv)
+		}
+		out = append(out, ProviderConfig{Name: e.Name, BaseURL: e.BaseURL, APIKey: key, Model: e.Model})
+	}
+	return out, nil
 }
 
 // parseBool treats anything unparseable as false — same fail-safe

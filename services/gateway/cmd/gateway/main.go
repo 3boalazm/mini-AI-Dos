@@ -48,12 +48,25 @@ func run() error {
 	}
 	log := logging.New(logging.Config{Environment: env, Level: cfg.LogLevel})
 
+	// cfg.AITimeout is each upstream's HTTP client timeout — shorter than
+	// the server's per-request backstop (AITimeout + margin) so a
+	// provider timeout is the one that normally fires.
 	var p provider.Provider
-	switch cfg.Provider {
-	case config.ProviderOpenAI:
-		// cfg.AITimeout is the upstream HTTP client timeout — shorter than
-		// the server's per-request backstop (AITimeout + margin) so the
-		// provider timeout is the one that normally fires.
+	switch {
+	case len(cfg.AIProviders) > 0:
+		ups := make([]provider.Upstream, 0, len(cfg.AIProviders))
+		names := make([]string, 0, len(cfg.AIProviders))
+		for _, pc := range cfg.AIProviders {
+			ups = append(ups, provider.Upstream{
+				Name:     pc.Name,
+				Model:    pc.Model,
+				Provider: provider.NewOpenAI(pc.BaseURL, pc.APIKey, cfg.AITimeout, log),
+			})
+			names = append(names, pc.Name)
+		}
+		p = provider.NewFailover(ups, log)
+		log.Info("provider configured", "provider", "failover", "chain", names, "timeout", cfg.AITimeout.String())
+	case cfg.Provider == config.ProviderOpenAI:
 		p = provider.NewOpenAI(cfg.AIBaseURL, cfg.AIAPIKey, cfg.AITimeout, log)
 		log.Info("provider configured", "provider", "openai", "base_url", cfg.AIBaseURL, "timeout", cfg.AITimeout.String())
 	default:

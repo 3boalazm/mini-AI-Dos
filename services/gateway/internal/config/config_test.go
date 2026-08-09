@@ -35,6 +35,71 @@ func TestLoad_MinimalDefaults(t *testing.T) {
 	}
 }
 
+func TestLoad_FailoverProviders(t *testing.T) {
+	cfg, err := load(t, map[string]string{
+		"MINI_AI_DOS_API_KEY": "k",
+		"GEMINI_API_KEY":      "gem-key",
+		"GROQ_API_KEY":        "groq-key",
+		"AI_PROVIDERS": `[
+			{"name":"gemini","base_url":"https://g/v1","key_env":"GEMINI_API_KEY","model":"gemini-3.6-flash"},
+			{"name":"groq","base_url":"https://q/v1","key_env":"GROQ_API_KEY","model":"gpt-oss-120b"}
+		]`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.AIProviders) != 2 {
+		t.Fatalf("got %d providers, want 2", len(cfg.AIProviders))
+	}
+	if cfg.AIProviders[0].APIKey != "gem-key" || cfg.AIProviders[1].APIKey != "groq-key" {
+		t.Errorf("keys not resolved from env: %+v", cfg.AIProviders)
+	}
+	if cfg.AIProviders[0].Model != "gemini-3.6-flash" {
+		t.Errorf("model wrong: %q", cfg.AIProviders[0].Model)
+	}
+	// Failover mode fills a sentinel model so request validation passes.
+	if cfg.AIModel != "auto" {
+		t.Errorf("failover mode should default AIModel to 'auto', got %q", cfg.AIModel)
+	}
+	// AI_API_KEY is NOT required in failover mode.
+	if cfg.AIAPIKey != "" {
+		t.Errorf("AIAPIKey should be unused in failover mode, got %q", cfg.AIAPIKey)
+	}
+}
+
+func TestLoad_FailoverValidation(t *testing.T) {
+	// Missing key_env value.
+	if _, err := load(t, map[string]string{
+		"MINI_AI_DOS_API_KEY": "k",
+		"AI_PROVIDERS":        `[{"name":"gemini","base_url":"https://g/v1","key_env":"NOPE","model":"m"}]`,
+	}); err == nil {
+		t.Error("provider with an unset key_env should fail")
+	}
+	// Missing required field (model).
+	if _, err := load(t, map[string]string{
+		"MINI_AI_DOS_API_KEY": "k",
+		"GEMINI_API_KEY":      "x",
+		"AI_PROVIDERS":        `[{"name":"gemini","base_url":"https://g/v1","key_env":"GEMINI_API_KEY"}]`,
+	}); err == nil {
+		t.Error("provider missing model should fail")
+	}
+	// Malformed JSON.
+	if _, err := load(t, map[string]string{
+		"MINI_AI_DOS_API_KEY": "k",
+		"AI_PROVIDERS":        `not json`,
+	}); err == nil {
+		t.Error("malformed AI_PROVIDERS should fail")
+	}
+	// A literal key (no key_env) is accepted.
+	cfg, err := load(t, map[string]string{
+		"MINI_AI_DOS_API_KEY": "k",
+		"AI_PROVIDERS":        `[{"name":"x","base_url":"https://x/v1","key":"literal","model":"m"}]`,
+	})
+	if err != nil || len(cfg.AIProviders) != 1 || cfg.AIProviders[0].APIKey != "literal" {
+		t.Errorf("literal key should be accepted: err=%v cfg=%+v", err, cfg.AIProviders)
+	}
+}
+
 func TestLoad_AITimeout(t *testing.T) {
 	cfg, err := load(t, map[string]string{
 		"MINI_AI_DOS_API_KEY": "k",

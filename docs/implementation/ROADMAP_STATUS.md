@@ -24,7 +24,7 @@ Note: a separate, unrelated Python codebase calling itself "AI-DOS — AI Delive
 | 1     | Database Foundation               | 🔴 Blocked               | [PHASE_1_SCOPE.md](PHASE_1_SCOPE.md) — scope determined, blocked on WSL2, see `EXECUTION_STATE.md` |
 | 2     | Organization & Project Foundation | 🟡 Approved, not started | [PHASE_2_SCOPE.md](PHASE_2_SCOPE.md) — scope approved in principle, implementation not started     |
 | 3     | Authentication & API Keys         | ⬜ Not started           | —                                                                                                  |
-| 4     | Gateway & Routing                 | ⬜ Not started           | —                                                                                                  |
+| 4     | Gateway & Routing                 | 🟡 Failover shipped      | Multi-provider failover chain (`AI_PROVIDERS`) live; full RoutingPolicy (org-scoped) still to come |
 | 5     | Provider Adapter System           | ⬜ Not started           | —                                                                                                  |
 | 6     | Usage, Cost & Metrics             | ⬜ Not started           | —                                                                                                  |
 | 7     | Organization & RBAC (Advanced)    | ⬜ Not started           | —                                                                                                  |

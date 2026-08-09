@@ -59,10 +59,11 @@ const landingHTML = `<!doctype html>
   <h1>Mini AI-DOS Gateway</h1>
   <p class="tag">OpenAI-compatible LLM gateway — running.</p>
   <ul>
+    <li><code>GET /chat</code> — browser chat UI (bring your API key)</li>
     <li><code>GET /health</code> — liveness and active provider</li>
     <li><code>POST /v1/chat/completions</code> — chat completions (Bearer auth required)</li>
   </ul>
-  <p><a href="https://github.com/3boalazm/ai-dos">Source on GitHub</a></p>
+  <p><a href="/chat">Open the chat</a> · <a href="https://github.com/3boalazm/ai-dos">Source on GitHub</a></p>
 </main>
 </body>
 </html>

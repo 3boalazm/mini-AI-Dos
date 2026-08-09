@@ -75,6 +75,20 @@ func TestRoot_ServesLandingPage(t *testing.T) {
 	}
 }
 
+func TestChat_ServesChatPage(t *testing.T) {
+	h := newTestServer(t, nil)
+	rec := doJSON(t, h, http.MethodGet, "/chat", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chat: got %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("chat Content-Type: got %q, want text/html", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "/v1/chat/completions") {
+		t.Error("chat page should call the completions API")
+	}
+}
+
 func TestRoot_UnknownPathStays404(t *testing.T) {
 	h := newTestServer(t, nil)
 	rec := doJSON(t, h, http.MethodGet, "/definitely-not-a-route", "", "")

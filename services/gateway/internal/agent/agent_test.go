@@ -238,6 +238,44 @@ func TestRun_ActivityLogRecordsTools(t *testing.T) {
 	}
 }
 
+func TestCleanSummary(t *testing.T) {
+	cases := []struct{ in, fallback, want string }{
+		{"wrote the styles", "title", "wrote the styles"},
+		{"", "title", "title"},
+		{`{"tool":"write_file","args":{}}`, "title", "title"},
+		{`  {"x":1}`, "title", "title"},
+		{`["a","b"]`, "title", "title"},
+		{`the file has a "tool" section`, "title", "title"}, // contains "tool" → fall back, conservative
+	}
+	for _, c := range cases {
+		if got := cleanSummary(c.in, c.fallback); got != c.want {
+			t.Errorf("cleanSummary(%q,%q)=%q, want %q", c.in, c.fallback, got, c.want)
+		}
+	}
+}
+
+// A model that ends a step by re-emitting a (possibly broken) tool-call
+// JSON instead of a clean done-summary must not leak that JSON into the
+// user-facing result — the exact defect real production testing found.
+func TestRun_ResultNeverLeaksToolJSON(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`["make styles"]`,
+		`{"tool":"write_file","args":{"path":"styles.css","content":"body{}"}}`, // executes
+		`{"tool":"write_file","args":{"path":"styles.css","content":"body{}"}}`, // repeated instead of done
+		`{"tool":"write_file","args":{"path":"styles.css","content":"body{}"}}`,
+		`{"tool":"write_file","args":{"path":"styles.css","content":"body{}"}}`,
+		`{"tool":"write_file","args":{"path":"styles.css","content":"body{}"}}`,
+		`{"tool":"write_file","args":{"path":"styles.css","content":"body{}"}}`, // hits maxToolCalls
+		"OK",
+	}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	run, _ := e.Start("build styles")
+	final := waitFor(t, e, run.ID, StatusCompleted)
+	if strings.Contains(final.Result, `"tool"`) || strings.Contains(final.Result, "write_file\",\"args") {
+		t.Errorf("result leaked raw tool protocol:\n%s", final.Result)
+	}
+}
+
 func TestStart_Validation(t *testing.T) {
 	e := NewEngine(&scriptedProvider{responses: []string{"x"}}, "test-model", t.TempDir(), testLog())
 	if _, err := e.Start("   "); err == nil {

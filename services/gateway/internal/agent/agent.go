@@ -453,15 +453,14 @@ func (e *Engine) executeStep(ctx context.Context, id string, ws *Workspace, task
 		}
 		tc := parseToolCall(out)
 		if tc == nil {
-			// No tool call — treat the text as the step's result rather
-			// than failing on model formatting.
-			return firstLine(out), nil
+			// No parseable tool call — treat the text as the step's
+			// summary, but never leak a raw/broken tool-call JSON (a
+			// model can emit invalid JSON that fails to parse) into the
+			// user-facing result; fall back to the step title then.
+			return cleanSummary(firstLine(out), titles[i]), nil
 		}
 		if tc.Tool == "done" {
-			if s := tc.str("summary"); s != "" {
-				return s, nil
-			}
-			return titles[i], nil
+			return cleanSummary(tc.str("summary"), titles[i]), nil
 		}
 		e.appendLog(id, toolActivity(tc))
 		result := execTool(ctx, ws, tc)
@@ -575,6 +574,18 @@ func listOrNone(files []string) string {
 		return "(none yet)"
 	}
 	return strings.Join(files, "\n")
+}
+
+// cleanSummary returns s unless it is empty or looks like raw tool
+// protocol (a JSON object or a "tool" field a model emitted instead of
+// a plain summary), in which case it returns the fallback. This keeps
+// the internal tool protocol out of the user-facing result.
+func cleanSummary(s, fallback string) string {
+	t := strings.TrimSpace(s)
+	if t == "" || strings.HasPrefix(t, "{") || strings.HasPrefix(t, "[") || strings.Contains(t, `"tool"`) {
+		return fallback
+	}
+	return t
 }
 
 func firstLine(s string) string {

@@ -1,4 +1,4 @@
-// Package server wires the gateway's HTTP surface: four routes, the
+// Package server wires the gateway's HTTP surface: six routes, the
 // middleware chain (observability → auth → rate limit), and graceful
 // shutdown. SQL never appears here — there is no database layer yet
 // (infrastructure-blocked; see the repository README).
@@ -13,6 +13,7 @@ import (
 
 	"github.com/ai-dos/foundation/logging"
 	"github.com/ai-dos/foundation/util"
+	"github.com/ai-dos/gateway/internal/agent"
 	"github.com/ai-dos/gateway/internal/config"
 	"github.com/ai-dos/gateway/internal/provider"
 	"github.com/ai-dos/gateway/internal/ratelimit"
@@ -30,6 +31,9 @@ type Server struct {
 	repo    store.Repository
 	limiter *ratelimit.Limiter
 	httpSrv *http.Server
+	// agent drives /v1/agent/runs — the phase-A1 core loop
+	// (docs/implementation/AGENT_ROADMAP.md) over the same provider.
+	agent *agent.Engine
 	// backstop bounds one completion end to end, including the upstream
 	// call. Derived from cfg.AITimeout plus a margin, so the provider's
 	// own HTTP client timeout is the one that normally fires.
@@ -62,12 +66,20 @@ func New(cfg *config.Config, log *logging.Logger, p provider.Provider, repo stor
 		s.limiter = ratelimit.New(cfg.RateLimitRequests, cfg.RateLimitWindow, util.RealClock{})
 	}
 
+	s.agent = agent.NewEngine(p, cfg.AIModel, log)
+
 	mux := http.NewServeMux()
 	mux.Handle("/", http.HandlerFunc(s.handleRoot))
 	mux.Handle("/chat", http.HandlerFunc(s.handleChat))
 	mux.Handle("/health", http.HandlerFunc(s.handleHealth))
 	mux.Handle("/v1/chat/completions",
 		s.withAuth(s.withRateLimit(http.HandlerFunc(s.handleChatCompletions))))
+	// Creating a run costs several upstream calls, so it shares the
+	// rate limit; polling a snapshot costs nothing upstream, so it
+	// only needs auth.
+	mux.Handle("/v1/agent/runs",
+		s.withAuth(s.withRateLimit(http.HandlerFunc(s.handleAgentCreate))))
+	mux.Handle("/v1/agent/runs/", s.withAuth(http.HandlerFunc(s.handleAgentRun)))
 
 	s.httpSrv = &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),

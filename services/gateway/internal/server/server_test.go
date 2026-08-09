@@ -278,6 +278,77 @@ func TestUnauthenticatedRequestsDoNotConsumeRateLimit(t *testing.T) {
 	}
 }
 
+func TestAgentRun_RequiresAuth(t *testing.T) {
+	rec := doJSON(t, newTestServer(t, nil), http.MethodPost, "/v1/agent/runs", "", `{"task":"x"}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401", rec.Code)
+	}
+}
+
+func TestAgentRun_EmptyTaskRejected(t *testing.T) {
+	h := newTestServer(t, func(c *config.Config) { c.AIModel = "agent-model" })
+	rec := doJSON(t, h, http.MethodPost, "/v1/agent/runs", testAPIKey, `{"task":"  "}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400 — body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAgentRun_UnknownId404(t *testing.T) {
+	h := newTestServer(t, func(c *config.Config) { c.AIModel = "agent-model" })
+	rec := doJSON(t, h, http.MethodGet, "/v1/agent/runs/run_nope", testAPIKey, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got %d, want 404 — body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAgentRun_EndToEndWithMock(t *testing.T) {
+	h := newTestServer(t, func(c *config.Config) { c.AIModel = "agent-model" })
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/agent/runs", testAPIKey, `{"task":"build a tiny page"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202 — body: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("create body missing run id: %v — %s", err, rec.Body.String())
+	}
+
+	// The mock provider answers instantly, so the loop finishes fast;
+	// poll like a real client would.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec = doJSON(t, h, http.MethodGet, "/v1/agent/runs/"+created.ID, testAPIKey, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("poll: got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		var run struct {
+			Status string `json:"status"`
+			Result string `json:"result"`
+			Error  string `json:"error"`
+			Steps  []struct{ Status string }
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &run); err != nil {
+			t.Fatalf("poll body: %v", err)
+		}
+		if run.Status == "completed" {
+			if run.Result == "" {
+				t.Error("completed run should carry a result")
+			}
+			return
+		}
+		if run.Status == "failed" {
+			t.Fatalf("run failed: %s", run.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run never completed, last status %s", run.Status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestErrorBody_IsOpenAIShape(t *testing.T) {
 	rec := doJSON(t, newTestServer(t, nil), http.MethodPost, "/v1/chat/completions", "", validChat)
 	var body openAIError

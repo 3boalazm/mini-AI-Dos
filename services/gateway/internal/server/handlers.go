@@ -58,6 +58,7 @@ const landingHTML = `<!doctype html>
     <li><code>GET /chat</code> — browser chat UI (bring your API key)</li>
     <li><code>GET /health</code> — liveness and active provider</li>
     <li><code>POST /v1/chat/completions</code> — chat completions (Bearer auth required)</li>
+    <li><code>POST /v1/agent/runs</code> — agent runs: plan → execute → inspect → fix (Bearer auth required)</li>
   </ul>
   <p><a href="/chat">Open the chat</a> · <a href="https://github.com/3boalazm/ai-dos">Source on GitHub</a></p>
 </main>

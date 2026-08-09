@@ -72,6 +72,7 @@ const chatHTML = `<!doctype html>
   textarea { flex: 1; resize: none; padding: .6rem .8rem; border-radius: 10px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; font: inherit; height: 3rem; }
   form button { padding: 0 1.2rem; border-radius: 10px; border: 0; background: #3b82f6; color: #fff; font: inherit; cursor: pointer; }
   form button:disabled { opacity: .5; }
+  #modelabel { display: flex; align-items: center; gap: .3rem; font-size: .78rem; opacity: .85; user-select: none; cursor: pointer; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -85,6 +86,7 @@ const chatHTML = `<!doctype html>
 <div id="log"></div>
 <form id="f">
   <textarea id="in" placeholder="اكتب رسالتك… (Enter للإرسال، Shift+Enter لسطر جديد)"></textarea>
+  <label id="modelabel"><input type="checkbox" id="agentmode"> 🤖 وكيل</label>
   <button id="send" type="submit">إرسال</button>
 </form>
 <script>
@@ -101,7 +103,7 @@ const chatHTML = `<!doctype html>
   // ---- The status machine. Everything the UI shows derives from
   // state.status; adding future agent states means adding a label and
   // a card builder, not restructuring the page.
-  var state = { status: 'idle', lastText: '', ctrl: null, card: null };
+  var state = { status: 'idle', lastText: '', ctrl: null, card: null, retryFn: null, runId: null, poll: null };
   var LABELS = { idle: 'جاهز', working: 'شغال…', waiting: 'مستني موافقتك', error: 'خطأ', done: 'اكتمل ✓' };
 
   function setStatus(s) {
@@ -310,13 +312,13 @@ const chatHTML = `<!doctype html>
     a.className = 'actions';
     a.appendChild(actionBtn('إعادة المحاولة', 'primary', function () {
       dropCard();
-      send(state.lastText);
+      if (state.retryFn) { state.retryFn(); } else { send(state.lastText); }
     }));
     a.appendChild(actionBtn('إلغاء', '', function () { dropCard(); setStatus('idle'); }));
     c.appendChild(a);
   }
 
-  // ---- The one flow: send. Every status transition happens here.
+  // ---- Flow 1: plain chat send.
   function send(text) {
     if (!text) return;
     var key = loadKey();
@@ -326,6 +328,7 @@ const chatHTML = `<!doctype html>
       return;
     }
     state.lastText = text;
+    state.retryFn = function () { send(text); };
     msgs.push({ role: 'user', content: text });
     add('user', text);
     setStatus('working');
@@ -375,6 +378,119 @@ const chatHTML = `<!doctype html>
     });
   }
 
+  // ---- Flow 2: agent runs. POST creates a run; the working card is
+  // then driven by polled snapshots — live plan steps, real phases,
+  // real cancellation.
+  var PHASES = {
+    planning: 'بيفهم المهمة وبيخطط…',
+    executing: 'بينفذ الخطة…',
+    inspecting: 'بيراجع شغله…',
+    fixing: 'بيصلح المشاكل اللي لقاها…'
+  };
+
+  function renderSteps(stepsEl, steps) {
+    stepsEl.textContent = '';
+    for (var i = 0; i < steps.length; i++) {
+      var st = steps[i].status;
+      var d = document.createElement('div');
+      d.className = 'step' + (st === 'active' ? ' active' : (st === 'done' ? ' done' : ''));
+      d.dir = 'auto';
+      d.textContent = (st === 'done' ? '✓ ' : (st === 'active' ? '● ' : '○ ')) + steps[i].title;
+      stepsEl.appendChild(d);
+    }
+  }
+
+  function agentSend(text) {
+    if (!text) return;
+    var key = loadKey();
+    if (!key) {
+      state.lastText = text;
+      waitingCard('محتاج الـ API key عشان أكمل.', function () { agentSend(text); });
+      return;
+    }
+    state.lastText = text;
+    state.retryFn = function () { agentSend(text); };
+    add('user', text);
+    setStatus('working');
+    var c = card('working', '🤖 الوكيل شغال');
+    var phase = document.createElement('div');
+    phase.className = 'cmsg';
+    phase.textContent = PHASES.planning;
+    c.appendChild(phase);
+    var stepsEl = document.createElement('div');
+    stepsEl.className = 'steps';
+    c.appendChild(stepsEl);
+    var a = document.createElement('div');
+    a.className = 'actions';
+    a.appendChild(actionBtn('إيقاف', 'danger', function () {
+      if (state.runId) {
+        fetch('/v1/agent/runs/' + state.runId + '/cancel', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + key }
+        }).catch(function () {});
+      }
+    }));
+    c.appendChild(a);
+    var t0 = Date.now();
+
+    fetch('/v1/agent/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify({ task: text })
+    }).then(function (r) {
+      return r.json().then(function (d) { return { ok: r.ok, status: r.status, data: d }; });
+    }).then(function (res) {
+      if (!res.ok) {
+        dropCard();
+        if (res.status === 401) {
+          clearKey();
+          waitingCard('المفتاح مرفوض — أدخل مفتاح صحيح عشان أكمل.', function () { agentSend(text); });
+          return;
+        }
+        errorCard((res.data && res.data.error && res.data.error.message) || ('HTTP ' + res.status));
+        return;
+      }
+      state.runId = res.data.id;
+      pollRun(key, phase, stepsEl, t0);
+    }).catch(function (err) {
+      dropCard();
+      errorCard('فشل الاتصال: ' + err.message);
+    });
+  }
+
+  function pollRun(key, phase, stepsEl, t0) {
+    state.poll = setTimeout(function tick() {
+      fetch('/v1/agent/runs/' + state.runId, { headers: { 'Authorization': 'Bearer ' + key } })
+        .then(function (r) { return r.json(); })
+        .then(function (run) {
+          if (!run || !run.status) { throw new Error('bad snapshot'); }
+          if (PHASES[run.status]) { phase.textContent = PHASES[run.status]; }
+          if (run.steps && run.steps.length) { renderSteps(stepsEl, run.steps); }
+          if (run.status === 'completed') {
+            state.runId = null;
+            dropCard();
+            var bubble = add('assistant', run.result || '(مفيش نتيجة)');
+            var m = document.createElement('div');
+            m.className = 'meta';
+            m.textContent = 'agent · ' + (run.steps ? run.steps.length : 0) + ' steps · ' + ((Date.now() - t0) / 1000).toFixed(0) + 's';
+            bubble.appendChild(m);
+            setStatus('done');
+            return;
+          }
+          if (run.status === 'failed') {
+            state.runId = null;
+            dropCard();
+            if (run.error && run.error.indexOf('اتلغى') > -1) { setStatus('idle'); }
+            else { errorCard(run.error || 'فشل غير معروف'); }
+            return;
+          }
+          log.scrollTop = log.scrollHeight;
+          state.poll = setTimeout(tick, 1500);
+        })
+        .catch(function () { state.poll = setTimeout(tick, 3000); });
+    }, 1200);
+  }
+
   // ---- Controls: Send, Stop (in the working card), Retry (in the
   // error card), Approve/Cancel (in the waiting card), New Chat.
   form.onsubmit = function (e) {
@@ -383,11 +499,14 @@ const chatHTML = `<!doctype html>
     var text = input.value.trim();
     if (!text) return;
     input.value = '';
-    send(text);
+    if (document.getElementById('agentmode').checked) { agentSend(text); }
+    else { send(text); }
   };
 
   document.getElementById('newbtn').onclick = function () {
     if (state.ctrl) state.ctrl.abort();
+    if (state.poll) { clearTimeout(state.poll); state.poll = null; }
+    state.runId = null;
     msgs = [];
     log.textContent = '';
     state.card = null;

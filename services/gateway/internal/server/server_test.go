@@ -61,6 +61,39 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 
 const validChat = `{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`
 
+func TestRoot_ServesLandingPage(t *testing.T) {
+	h := newTestServer(t, nil)
+	rec := doJSON(t, h, http.MethodGet, "/", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("root: got %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("root Content-Type: got %q, want text/html", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "Mini AI-DOS Gateway") {
+		t.Error("root page should name the service")
+	}
+}
+
+func TestRoot_UnknownPathStays404(t *testing.T) {
+	h := newTestServer(t, nil)
+	rec := doJSON(t, h, http.MethodGet, "/definitely-not-a-route", "", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown path: got %d, want 404", rec.Code)
+	}
+}
+
+func TestRoot_MethodNotAllowed(t *testing.T) {
+	h := newTestServer(t, nil)
+	rec := doJSON(t, h, http.MethodPost, "/", "", "{}")
+	if rec.Code == http.StatusOK {
+		t.Fatal("POST / should not return 200")
+	}
+	if rec.Header().Get("Allow") != http.MethodGet {
+		t.Errorf("Allow header: got %q, want GET", rec.Header().Get("Allow"))
+	}
+}
+
 func TestHealth_NoAuthRequired(t *testing.T) {
 	h := newTestServer(t, nil)
 	rec := doJSON(t, h, http.MethodGet, "/health", "", "")

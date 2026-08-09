@@ -1,4 +1,4 @@
-// Package server wires the gateway's HTTP surface: two routes, the
+// Package server wires the gateway's HTTP surface: three routes, the
 // middleware chain (observability → auth → rate limit), and graceful
 // shutdown. SQL never appears here — there is no database layer yet
 // (infrastructure-blocked; see the repository README).
@@ -51,6 +51,7 @@ func New(cfg *config.Config, log *logging.Logger, p provider.Provider, repo stor
 	}
 
 	mux := http.NewServeMux()
+	mux.Handle("/", http.HandlerFunc(s.handleRoot))
 	mux.Handle("/health", http.HandlerFunc(s.handleHealth))
 	mux.Handle("/v1/chat/completions",
 		s.withAuth(s.withRateLimit(http.HandlerFunc(s.handleChatCompletions))))

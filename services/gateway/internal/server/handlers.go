@@ -34,6 +34,58 @@ type chatRequest struct {
 	Stream      bool               `json:"stream"`
 }
 
+// landingHTML is the static page served at "/". It documents the API
+// surface for a human landing on the bare domain; machines use
+// /health. No dynamic data appears here so the page stays cacheable
+// and leaks nothing about configuration.
+const landingHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mini AI-DOS Gateway</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+  main { max-width: 40rem; padding: 2rem; }
+  h1 { margin: 0 0 .25rem; font-size: 1.6rem; }
+  .tag { margin-top: 0; opacity: .7; }
+  code { background: rgba(127,127,127,.15); padding: .15rem .4rem; border-radius: 4px; }
+  ul { line-height: 2; padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mini AI-DOS Gateway</h1>
+  <p class="tag">OpenAI-compatible LLM gateway — running.</p>
+  <ul>
+    <li><code>GET /health</code> — liveness and active provider</li>
+    <li><code>POST /v1/chat/completions</code> — chat completions (Bearer auth required)</li>
+  </ul>
+  <p><a href="https://github.com/3boalazm/ai-dos">Source on GitHub</a></p>
+</main>
+</body>
+</html>
+`
+
+// handleRoot serves the unauthenticated landing page at exactly "/".
+// The mux "/" pattern is a catch-all, so the path check below is what
+// keeps every other unmatched path on the plain 404 it always had.
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeError(w, errors.New(errors.CodeValidation, "method not allowed: use GET"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(landingHTML))
+}
+
 // handleHealth is the unauthenticated liveness endpoint.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

@@ -742,8 +742,10 @@ const chatHTML = `<!doctype html>
             if (run.files && run.files.length) { addFileTree(bubble, doneId, run.files, key); }
             var m = document.createElement('div');
             m.className = 'meta';
-            m.textContent = 'agent · ' + (run.steps ? run.steps.length : 0) + ' steps · ' +
+            var metaBits = 'agent · ' + (run.steps ? run.steps.length : 0) + ' steps · ' +
               (run.files ? run.files.length : 0) + ' files · ' + ((Date.now() - t0) / 1000).toFixed(0) + 's';
+            if (run.recovered) { metaBits += ' · تعافى من خطأ'; }
+            m.textContent = metaBits;
             bubble.appendChild(m);
             setStatus('done');
             return;

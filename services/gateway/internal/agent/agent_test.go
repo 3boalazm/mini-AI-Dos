@@ -499,6 +499,53 @@ func (b blockingProvider) ChatCompletion(ctx context.Context, _ *provider.ChatRe
 	return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.Message{Content: "OK"}}}}, nil
 }
 
+func TestRun_ErrorRecovery_FailThenSucceed(t *testing.T) {
+	// A nonexistent command fails (non-zero exit on both sh and cmd);
+	// the next command succeeds — the run should be marked recovered and
+	// the result should lead with the recovery note, not a raw dump.
+	p := &scriptedProvider{responses: []string{
+		`["run a build step"]`,
+		`{"tool":"run_command","args":{"command":"this_command_does_not_exist_xyz"}}`, // fails
+		`{"tool":"run_command","args":{"command":"echo recovered-ok"}}`,               // succeeds
+		`{"tool":"done","args":{"summary":"fixed and re-ran"}}`,
+		"OK",
+	}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	run, _ := e.Start("build", true)
+	final := waitFor(t, e, run.ID, StatusCompleted)
+	if final.Status != StatusCompleted {
+		t.Fatalf("status: got %s (err %q)", final.Status, final.Error)
+	}
+	if final.CmdErrors < 1 {
+		t.Errorf("should have counted at least one command failure, got %d", final.CmdErrors)
+	}
+	if !final.Recovered {
+		t.Error("a failure followed by a success should mark the run recovered")
+	}
+	if !strings.Contains(final.Result, "تعافى") {
+		t.Errorf("result should lead with the recovery note, got:\n%s", final.Result)
+	}
+	// The raw failure text must not be dumped into the result.
+	if strings.Contains(final.Result, "EXIT non-zero") {
+		t.Errorf("result should not contain raw command error output:\n%s", final.Result)
+	}
+}
+
+func TestRun_NoRecovery_WhenNoFailure(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`["step"]`,
+		`{"tool":"run_command","args":{"command":"echo all-good"}}`,
+		`{"tool":"done","args":{"summary":"ok"}}`,
+		"OK",
+	}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	run, _ := e.Start("t", true)
+	final := waitFor(t, e, run.ID, StatusCompleted)
+	if final.Recovered || final.CmdErrors != 0 {
+		t.Errorf("clean run should not be marked recovered: recovered=%v errors=%d", final.Recovered, final.CmdErrors)
+	}
+}
+
 func TestStart_Validation(t *testing.T) {
 	e := NewEngine(&scriptedProvider{responses: []string{"x"}}, "test-model", t.TempDir(), testLog())
 	if _, err := e.Start("   ", true); err == nil {

@@ -103,22 +103,25 @@ type Step struct {
 // Run is one agent task from request to result. Snapshots returned by
 // the engine are copies — callers never share memory with the loop.
 type Run struct {
-	ID      string    `json:"id"`
-	Task    string    `json:"task"`
-	Status  Status    `json:"status"`
-	Steps   []Step    `json:"steps"`
-	Files   []string  `json:"files"`
-	Log     []string  `json:"log,omitempty"`
-	Pending *Approval `json:"pending,omitempty"`
-	Result  string    `json:"result,omitempty"`
-	Error   string    `json:"error,omitempty"`
-	Created int64     `json:"created"`
+	ID        string    `json:"id"`
+	Task      string    `json:"task"`
+	Status    Status    `json:"status"`
+	Steps     []Step    `json:"steps"`
+	Files     []string  `json:"files"`
+	Log       []string  `json:"log,omitempty"`
+	Pending   *Approval `json:"pending,omitempty"`
+	CmdErrors int       `json:"cmd_errors,omitempty"`
+	Recovered bool      `json:"recovered,omitempty"`
+	Result    string    `json:"result,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	Created   int64     `json:"created"`
 
-	cancel   context.CancelFunc
-	ws       *Workspace
-	approve  chan struct{}         // signalled by Approve() to release a planned run (A7)
-	decision chan approvalDecision // carries the user's Allow/Deny for a pending command (A8)
-	allowed  map[string]bool       // categories the user chose to "always allow" this run (A8)
+	cancel        context.CancelFunc
+	ws            *Workspace
+	approve       chan struct{}         // signalled by Approve() to release a planned run (A7)
+	decision      chan approvalDecision // carries the user's Allow/Deny for a pending command (A8)
+	allowed       map[string]bool       // categories the user chose to "always allow" this run (A8)
+	hadCmdFailure bool                  // a run_command has failed at least once (A9)
 }
 
 // Engine owns every run and drives the loop. One engine per server.
@@ -237,7 +240,35 @@ func (e *Engine) runTool(ctx context.Context, id string, ws *Workspace, tc *tool
 			}
 		}
 	}
-	return execTool(ctx, ws, tc)
+	result := execTool(ctx, ws, tc)
+	if tc.Tool == "run_command" {
+		e.recordCommandOutcome(id, result)
+	}
+	return result
+}
+
+// recordCommandOutcome tracks A9 error recovery: a command that exits
+// non-zero (or times out) is a failure; a later successful command
+// after any failure marks the run as recovered, which the final report
+// surfaces succinctly instead of dumping raw errors.
+func (e *Engine) recordCommandOutcome(id, result string) {
+	e.update(id, func(r *Run) {
+		switch {
+		case commandFailed(result):
+			r.CmdErrors++
+			r.hadCmdFailure = true
+		case commandSucceeded(result) && r.hadCmdFailure:
+			r.Recovered = true
+		}
+	})
+}
+
+func commandFailed(result string) bool {
+	return strings.HasPrefix(result, "EXIT ") || strings.HasPrefix(result, "ERROR: command timed out")
+}
+
+func commandSucceeded(result string) bool {
+	return strings.HasPrefix(result, "OK (exit 0")
 }
 
 // requestApproval pauses the run on a sensitive command until the user
@@ -537,7 +568,12 @@ func (e *Engine) loop(ctx context.Context, id, task string, autoStart bool) {
 
 	e.update(id, func(r *Run) {
 		r.Status = StatusCompleted
-		r.Result = result
+		// A9: report recovery as a one-line summary, not a raw error dump.
+		if r.Recovered {
+			r.Result = "⚠ واجه خطأ أثناء التنفيذ وتعافى منه تلقائيًا.\n\n" + result
+		} else {
+			r.Result = result
+		}
 		r.Files = files
 	})
 	e.log.Info("agent run completed", "run_id", id, "steps", len(titles), "files", len(files), "fixed", !inspectionPassed(verdict))
@@ -616,7 +652,7 @@ const execToolSystem = `You are the execution module of a build agent with a fil
 {"tool":"inspect_page","args":{"path":"index.html"}}
 When the current step is fully done, reply:
 {"tool":"done","args":{"summary":"what you did"}}
-Rules: relative paths only; produce real, complete file contents; run_command runs in the workspace (install/delete/git are not available yet); inspect_page checks an HTML file for broken links, missing assets, and missing alt/meta — use it to verify a page you built; do this step's work then call done.`
+Rules: relative paths only; produce real, complete file contents; run_command runs in the workspace; inspect_page checks an HTML file for broken links, missing assets, and missing alt/meta — use it to verify a page you built. If a run_command fails (non-zero EXIT or an ERROR result), read the output, fix the cause, and run it again — don't give up after one failure. Do this step's work then call done.`
 
 // executeStep runs the tool loop for one plan step and returns a short
 // summary of what it did.
@@ -670,7 +706,7 @@ func (e *Engine) inspect(ctx context.Context, task, deliverable, autoChecks stri
 	return e.chat(ctx, inspectSystem, user)
 }
 
-const fixToolSystem = `You are the fixing module of a build agent with a file workspace and a shell. Fix the issues from the inspection notes by editing files. Reply with ONLY one JSON object per turn (same tools as execution: read_file, write_file, edit_file, list_files, search_files, run_command, inspect_page). Use inspect_page to confirm an HTML fix resolved the reported issue. When the issues are fixed, reply {"tool":"done","args":{"summary":"..."}}. Relative paths only.`
+const fixToolSystem = `You are the fixing module of a build agent with a file workspace and a shell. Fix the issues from the inspection notes by editing files. Reply with ONLY one JSON object per turn (same tools as execution: read_file, write_file, edit_file, list_files, search_files, run_command, inspect_page). Use inspect_page to confirm an HTML fix resolved the reported issue. If a run_command fails, read the error, fix the cause, and re-run it before giving up. When the issues are fixed, reply {"tool":"done","args":{"summary":"..."}}. Relative paths only.`
 
 func (e *Engine) fixWithTools(ctx context.Context, id string, ws *Workspace, task, notes string) error {
 	files, _ := ws.List()

@@ -95,6 +95,38 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if id, ok := strings.CutSuffix(rest, "/revert"); ok {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeError(w, errors.New(errors.CodeValidation, "method not allowed: use POST"))
+			return
+		}
+		if !s.agent.Revert(id) {
+			writeError(w, errors.New(errors.CodeNotFound, "nothing to revert for this run"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "reverted"})
+		return
+	}
+
+	if id, ok := strings.CutSuffix(rest, "/compare"); ok {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeError(w, errors.New(errors.CodeValidation, "method not allowed: use GET"))
+			return
+		}
+		diff, known := s.agent.Compare(id)
+		if !known {
+			writeError(w, errors.New(errors.CodeNotFound, "no such agent run"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(diff))
+		return
+	}
+
 	if id, ok := strings.CutSuffix(rest, "/zip"); ok {
 		s.serveRunZip(w, r, id)
 		return

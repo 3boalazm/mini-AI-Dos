@@ -509,6 +509,63 @@ const chatHTML = `<!doctype html>
     return p[p.length - 1] || path;
   }
 
+  // A10 change summary: what the fix stage changed vs the initial build,
+  // with Compare (a unified diff) and Revert (undo the fixes).
+  function addChanges(bubble, runId, changes, key) {
+    var box = document.createElement('div');
+    box.className = 'files';
+    var title = document.createElement('div');
+    title.className = 'ftitle';
+    var mods = changes.length;
+    title.textContent = '📝 الإصلاح غيّر ' + mods + ' ملف:';
+    box.appendChild(title);
+    for (var i = 0; i < changes.length; i++) {
+      var c = changes[i];
+      var d = document.createElement('div');
+      d.className = 'step';
+      d.dir = 'ltr';
+      var tag = c.status === 'added' ? '＋' : (c.status === 'deleted' ? '－' : '~');
+      var counts = '';
+      if (c.added || c.removed) { counts = ' (+' + (c.added || 0) + '/-' + (c.removed || 0) + ')'; }
+      d.textContent = tag + ' ' + c.path + counts;
+      box.appendChild(d);
+    }
+    var diffPre = document.createElement('div');
+    diffPre.className = 'preview';
+    var row = document.createElement('div');
+    row.className = 'actions';
+    row.appendChild(actionBtn('عرض الفروقات', '', function () {
+      fetch('/v1/agent/runs/' + runId + '/compare', { headers: { 'Authorization': 'Bearer ' + key } })
+        .then(function (r) { return r.text(); })
+        .then(function (txt) {
+          diffPre.textContent = '';
+          var wrap = document.createElement('div');
+          wrap.className = 'code';
+          var pre = document.createElement('pre');
+          var code = document.createElement('code');
+          code.textContent = txt;
+          pre.appendChild(code);
+          wrap.appendChild(pre);
+          diffPre.appendChild(wrap);
+        }).catch(function () {});
+    }));
+    row.appendChild(actionBtn('↩ رجّع قبل الإصلاح', 'danger', function () {
+      fetch('/v1/agent/runs/' + runId + '/revert', { method: 'POST', headers: { 'Authorization': 'Bearer ' + key } })
+        .then(function (r) { return r.json(); })
+        .then(function () {
+          box.remove();
+          diffPre.remove();
+          var note = document.createElement('div');
+          note.className = 'meta';
+          note.textContent = '↩ تم الرجوع للنسخة قبل الإصلاح — نزّل الملفات تاني لتاخد النسخة دي.';
+          bubble.appendChild(note);
+        }).catch(function () {});
+    }));
+    box.appendChild(row);
+    box.appendChild(diffPre);
+    bubble.appendChild(box);
+  }
+
   // File tree under a completed agent run. Each file has a preview
   // (click the name) and a download (⬇). "تحميل ZIP" downloads the whole
   // project. Previews: .html renders in a sandboxed iframe (no
@@ -739,6 +796,7 @@ const chatHTML = `<!doctype html>
             var doneId = run.id;
             dropCard();
             var bubble = add('assistant', run.result || '(مفيش نتيجة)');
+            if (run.changes && run.changes.length) { addChanges(bubble, doneId, run.changes, key); }
             if (run.files && run.files.length) { addFileTree(bubble, doneId, run.files, key); }
             var m = document.createElement('div');
             m.className = 'meta';

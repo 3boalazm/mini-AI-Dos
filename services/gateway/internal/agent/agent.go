@@ -103,18 +103,19 @@ type Step struct {
 // Run is one agent task from request to result. Snapshots returned by
 // the engine are copies — callers never share memory with the loop.
 type Run struct {
-	ID        string    `json:"id"`
-	Task      string    `json:"task"`
-	Status    Status    `json:"status"`
-	Steps     []Step    `json:"steps"`
-	Files     []string  `json:"files"`
-	Log       []string  `json:"log,omitempty"`
-	Pending   *Approval `json:"pending,omitempty"`
-	CmdErrors int       `json:"cmd_errors,omitempty"`
-	Recovered bool      `json:"recovered,omitempty"`
-	Result    string    `json:"result,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	Created   int64     `json:"created"`
+	ID        string       `json:"id"`
+	Task      string       `json:"task"`
+	Status    Status       `json:"status"`
+	Steps     []Step       `json:"steps"`
+	Files     []string     `json:"files"`
+	Log       []string     `json:"log,omitempty"`
+	Pending   *Approval    `json:"pending,omitempty"`
+	CmdErrors int          `json:"cmd_errors,omitempty"`
+	Recovered bool         `json:"recovered,omitempty"`
+	Changes   []FileChange `json:"changes,omitempty"`
+	Result    string       `json:"result,omitempty"`
+	Error     string       `json:"error,omitempty"`
+	Created   int64        `json:"created"`
 
 	cancel        context.CancelFunc
 	ws            *Workspace
@@ -122,6 +123,7 @@ type Run struct {
 	decision      chan approvalDecision // carries the user's Allow/Deny for a pending command (A8)
 	allowed       map[string]bool       // categories the user chose to "always allow" this run (A8)
 	hadCmdFailure bool                  // a run_command has failed at least once (A9)
+	buildSnap     map[string]string     // workspace snapshot after the build, before fixes (A10 revert/compare)
 }
 
 // Engine owns every run and drives the loop. One engine per server.
@@ -325,9 +327,11 @@ func (e *Engine) Get(id string) *Run {
 	cp.approve = nil
 	cp.decision = nil
 	cp.allowed = nil
+	cp.buildSnap = nil
 	cp.Steps = append([]Step(nil), r.Steps...)
 	cp.Files = append([]string(nil), r.Files...)
 	cp.Log = append([]string(nil), r.Log...)
+	cp.Changes = append([]FileChange(nil), r.Changes...)
 	if r.Pending != nil {
 		p := *r.Pending
 		cp.Pending = &p
@@ -347,6 +351,52 @@ func (e *Engine) ReadRunFile(id, path string) (content string, known bool, err e
 	}
 	c, readErr := r.ws.ReadFile(path)
 	return c, true, readErr
+}
+
+// Compare returns a unified diff of what changed since the build
+// snapshot (A10). known reports whether the run id exists.
+func (e *Engine) Compare(id string) (diff string, known bool) {
+	e.mu.RLock()
+	r, ok := e.runs[id]
+	var before map[string]string
+	var ws *Workspace
+	if ok {
+		before, ws = r.buildSnap, r.ws
+	}
+	e.mu.RUnlock()
+	if !ok || ws == nil {
+		return "", false
+	}
+	if before == nil {
+		return "(no build snapshot yet)", true
+	}
+	return unifiedDiff(before, ws.Snapshot()), true
+}
+
+// Revert restores a run's workspace to its post-build snapshot, undoing
+// the fix stage's changes (A10). Reports whether it was applied.
+func (e *Engine) Revert(id string) bool {
+	e.mu.RLock()
+	r, ok := e.runs[id]
+	var before map[string]string
+	var ws *Workspace
+	if ok {
+		before, ws = r.buildSnap, r.ws
+	}
+	e.mu.RUnlock()
+	if !ok || ws == nil || before == nil {
+		return false
+	}
+	if err := ws.Restore(before); err != nil {
+		e.log.Warn("revert failed", "run_id", id, "error", err.Error())
+		return false
+	}
+	files, _ := ws.List()
+	e.update(id, func(r *Run) {
+		r.Files = files
+		r.Changes = nil
+	})
+	return true
 }
 
 // ZipRun writes every file in a run's workspace into w as a zip
@@ -529,6 +579,11 @@ func (e *Engine) loop(ctx context.Context, id, task string, autoStart bool) {
 	files, _ := ws.List()
 	hasFiles := len(files) > 0
 
+	// A10: snapshot the post-build workspace, so any changes the fix
+	// stage makes can be summarized, compared, and reverted.
+	buildSnap := ws.Snapshot()
+	e.update(id, func(r *Run) { r.buildSnap = buildSnap })
+
 	e.update(id, func(r *Run) { r.Status = StatusInspecting })
 	deliverable := ws.Dump(inspectDumpLimit)
 	if !hasFiles {
@@ -554,6 +609,9 @@ func (e *Engine) loop(ctx context.Context, id, task string, autoStart bool) {
 			}
 			files, _ = ws.List()
 			result = buildResult(summaries, files)
+			// A10: record what the fix stage changed vs the build.
+			changes := diffSnapshots(buildSnap, ws.Snapshot())
+			e.update(id, func(r *Run) { r.Changes = changes })
 		} else {
 			// No files were produced — fall back to A1-style text fix so
 			// the run still yields something usable.

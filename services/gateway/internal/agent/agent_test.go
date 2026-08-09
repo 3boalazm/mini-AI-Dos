@@ -85,7 +85,7 @@ func TestRun_HappyPath_PlanExecuteInspectOK(t *testing.T) {
 	}}
 	e := NewEngine(p, "test-model", t.TempDir(), testLog())
 
-	run, err := e.Start("build something")
+	run, err := e.Start("build something", true)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestRun_InspectionFailure_TriggersFix(t *testing.T) {
 	}}
 	e := NewEngine(p, "test-model", t.TempDir(), testLog())
 
-	run, err := e.Start("build a page")
+	run, err := e.Start("build a page", true)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestRun_ToolLoop_ProducesFiles(t *testing.T) {
 	}}
 	e := NewEngine(p, "test-model", t.TempDir(), testLog())
 
-	run, err := e.Start("build a page")
+	run, err := e.Start("build a page", true)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestRun_ActivityLogRecordsTools(t *testing.T) {
 		"OK",
 	}}
 	e := NewEngine(p, "m", t.TempDir(), testLog())
-	run, _ := e.Start("t")
+	run, _ := e.Start("t", true)
 	final := waitFor(t, e, run.ID, StatusCompleted)
 	joined := strings.Join(final.Log, "\n")
 	if !strings.Contains(joined, "write_file: a.txt") || !strings.Contains(joined, "$ echo hi") {
@@ -271,7 +271,7 @@ func TestRun_ResultNeverLeaksToolJSON(t *testing.T) {
 		"OK",
 	}}
 	e := NewEngine(p, "m", t.TempDir(), testLog())
-	run, _ := e.Start("build styles")
+	run, _ := e.Start("build styles", true)
 	final := waitFor(t, e, run.ID, StatusCompleted)
 	if strings.Contains(final.Result, `"tool"`) || strings.Contains(final.Result, "write_file\",\"args") {
 		t.Errorf("result leaked raw tool protocol:\n%s", final.Result)
@@ -287,7 +287,7 @@ func TestZipRun(t *testing.T) {
 		"OK",
 	}}
 	e := NewEngine(p, "m", t.TempDir(), testLog())
-	run, _ := e.Start("t")
+	run, _ := e.Start("t", true)
 	waitFor(t, e, run.ID, StatusCompleted)
 
 	var buf bytes.Buffer
@@ -315,13 +315,75 @@ func TestZipRun(t *testing.T) {
 	}
 }
 
+func TestRun_PlanGate_WaitsThenApproves(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`["step one","step two"]`, // plan
+		"work one", "work two",    // execute (after approval)
+		"OK", // inspect
+	}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+
+	run, err := e.Start("build", false) // gated
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// It should stop at "planned" with the steps visible, and not run.
+	planned := waitFor(t, e, run.ID, StatusPlanned)
+	if planned.Status != StatusPlanned {
+		t.Fatalf("status: got %s, want planned", planned.Status)
+	}
+	if len(planned.Steps) != 2 {
+		t.Fatalf("plan should be visible before approval, got %+v", planned.Steps)
+	}
+	// Give the loop a moment; it must remain planned (no execution).
+	time.Sleep(60 * time.Millisecond)
+	if s := e.Get(run.ID); s.Status != StatusPlanned {
+		t.Fatalf("run executed before approval: %s", s.Status)
+	}
+
+	if !e.Approve(run.ID) {
+		t.Fatal("Approve should succeed on a planned run")
+	}
+	final := waitFor(t, e, run.ID, StatusCompleted)
+	if final.Status != StatusCompleted {
+		t.Fatalf("status after approval: got %s (err %q)", final.Status, final.Error)
+	}
+}
+
+func TestRun_PlanGate_CancelBeforeApproval(t *testing.T) {
+	p := &scriptedProvider{responses: []string{`["a","b"]`, "w", "OK"}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	run, _ := e.Start("build", false)
+	waitFor(t, e, run.ID, StatusPlanned)
+	if !e.Cancel(run.ID) {
+		t.Fatal("cancel should succeed")
+	}
+	final := waitFor(t, e, run.ID, StatusFailed)
+	if final.Status != StatusFailed {
+		t.Errorf("cancelled-before-approval run should fail, got %s", final.Status)
+	}
+}
+
+func TestApprove_UnknownOrNotPlanned(t *testing.T) {
+	e := NewEngine(&scriptedProvider{responses: []string{`["a"]`, "w", "OK"}}, "m", t.TempDir(), testLog())
+	if e.Approve("run_nope") {
+		t.Error("approving an unknown run should return false")
+	}
+	// An auto-started run is never in the planned state → Approve is a no-op.
+	run, _ := e.Start("t", true)
+	waitFor(t, e, run.ID, StatusCompleted)
+	if e.Approve(run.ID) {
+		t.Error("approving a completed run should return false")
+	}
+}
+
 func TestStart_Validation(t *testing.T) {
 	e := NewEngine(&scriptedProvider{responses: []string{"x"}}, "test-model", t.TempDir(), testLog())
-	if _, err := e.Start("   "); err == nil {
+	if _, err := e.Start("   ", true); err == nil {
 		t.Error("empty task should be rejected")
 	}
 	noModel := NewEngine(&scriptedProvider{responses: []string{"x"}}, "", t.TempDir(), testLog())
-	if _, err := noModel.Start("task"); err == nil {
+	if _, err := noModel.Start("task", true); err == nil {
 		t.Error("engine without a model should reject runs")
 	}
 }
@@ -331,7 +393,7 @@ func TestGet_UnknownAndSnapshotIsolation(t *testing.T) {
 	if e.Get("nope") != nil {
 		t.Error("unknown id should return nil")
 	}
-	run, _ := e.Start("t")
+	run, _ := e.Start("t", true)
 	final := waitFor(t, e, run.ID, StatusCompleted)
 	final.Steps[0].Status = "tampered"
 	if e.Get(run.ID).Steps[0].Status == "tampered" {

@@ -9,9 +9,13 @@ import (
 	"github.com/ai-dos/foundation/errors"
 )
 
-// agentCreateRequest is the POST /v1/agent/runs body.
+// agentCreateRequest is the POST /v1/agent/runs body. AutoStart is a
+// pointer so an omitted field defaults to true (immediate run, the
+// behaviour direct API callers expect); the /chat UI sends false to get
+// the plan-approval gate (A7).
 type agentCreateRequest struct {
-	Task string `json:"task"`
+	Task      string `json:"task"`
+	AutoStart *bool  `json:"auto_start"`
 }
 
 // handleAgentCreate is POST /v1/agent/runs — starts an agent run and
@@ -35,7 +39,11 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := s.agent.Start(req.Task)
+	autoStart := true
+	if req.AutoStart != nil {
+		autoStart = *req.AutoStart
+	}
+	run, err := s.agent.Start(req.Task, autoStart)
 	if err != nil {
 		writeError(w, errors.Wrap(errors.CodeValidation, "cannot start agent run", err))
 		return
@@ -65,6 +73,20 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "cancelling"})
+		return
+	}
+
+	if id, ok := strings.CutSuffix(rest, "/approve"); ok {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeError(w, errors.New(errors.CodeValidation, "method not allowed: use POST"))
+			return
+		}
+		if !s.agent.Approve(id) {
+			writeError(w, errors.New(errors.CodeNotFound, "no such agent run awaiting approval"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "executing"})
 		return
 	}
 

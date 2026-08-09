@@ -294,6 +294,46 @@ func TestAgentRun_EmptyTaskRejected(t *testing.T) {
 	}
 }
 
+func TestAgentRun_PlanGate_ApproveFlow(t *testing.T) {
+	h := newTestServer(t, func(c *config.Config) { c.AIModel = "agent-model" })
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/agent/runs", testAPIKey, `{"task":"build","auto_start":false}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202", rec.Code)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	// Poll until it parks at "planned".
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		pr := doJSON(t, h, http.MethodGet, "/v1/agent/runs/"+created.ID, testAPIKey, "")
+		var run struct {
+			Status string `json:"status"`
+		}
+		_ = json.Unmarshal(pr.Body.Bytes(), &run)
+		if run.Status == "planned" {
+			break
+		}
+		if run.Status == "failed" || time.Now().After(deadline) {
+			t.Fatalf("run never reached planned (last %q)", run.Status)
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	// Approving releases it; a second approve is a no-op 404.
+	ap := doJSON(t, h, http.MethodPost, "/v1/agent/runs/"+created.ID+"/approve", testAPIKey, "")
+	if ap.Code != http.StatusOK {
+		t.Fatalf("approve: got %d, want 200", ap.Code)
+	}
+	ap2 := doJSON(t, h, http.MethodPost, "/v1/agent/runs/"+created.ID+"/approve", testAPIKey, "")
+	if ap2.Code != http.StatusNotFound {
+		t.Errorf("second approve should 404 (no longer awaiting), got %d", ap2.Code)
+	}
+}
+
 func TestAgentRun_UnknownId404(t *testing.T) {
 	h := newTestServer(t, func(c *config.Config) { c.AIModel = "agent-model" })
 	rec := doJSON(t, h, http.MethodGet, "/v1/agent/runs/run_nope", testAPIKey, "")

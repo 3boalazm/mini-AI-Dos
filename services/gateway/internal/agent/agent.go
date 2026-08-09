@@ -64,6 +64,7 @@ type Status string
 
 const (
 	StatusPlanning   Status = "planning"
+	StatusPlanned    Status = "planned" // plan ready, awaiting user approval (A7)
 	StatusExecuting  Status = "executing"
 	StatusInspecting Status = "inspecting"
 	StatusFixing     Status = "fixing"
@@ -97,8 +98,9 @@ type Run struct {
 	Error   string   `json:"error,omitempty"`
 	Created int64    `json:"created"`
 
-	cancel context.CancelFunc
-	ws     *Workspace
+	cancel  context.CancelFunc
+	ws      *Workspace
+	approve chan struct{} // signalled by Approve() to release a planned run (A7)
 }
 
 // Engine owns every run and drives the loop. One engine per server.
@@ -124,7 +126,10 @@ func NewEngine(p provider.Provider, model, baseDir string, log *logging.Logger) 
 }
 
 // Start validates and launches a run, returning its first snapshot.
-func (e *Engine) Start(task string) (*Run, error) {
+// When autoStart is false, the run stops after planning at status
+// "planned" until Approve is called (A7); when true it runs straight
+// through — the default for direct API callers.
+func (e *Engine) Start(task string, autoStart bool) (*Run, error) {
 	if strings.TrimSpace(task) == "" {
 		return nil, fmt.Errorf("task must be a non-empty string")
 	}
@@ -145,14 +150,37 @@ func (e *Engine) Start(task string) (*Run, error) {
 		Created: time.Now().Unix(),
 		cancel:  cancel,
 		ws:      ws,
+		approve: make(chan struct{}, 1),
 	}
 	e.mu.Lock()
 	e.runs[id] = run
 	e.evictLocked()
 	e.mu.Unlock()
 
-	go e.loop(ctx, id, task)
+	go e.loop(ctx, id, task, autoStart)
 	return e.Get(id), nil
+}
+
+// Approve releases a run waiting at the "planned" gate. Reports whether
+// the run was known and awaiting approval.
+func (e *Engine) Approve(id string) bool {
+	e.mu.RLock()
+	r, ok := e.runs[id]
+	awaiting := ok && r.Status == StatusPlanned
+	ch := (chan struct{})(nil)
+	if ok {
+		ch = r.approve
+	}
+	e.mu.RUnlock()
+	if !awaiting || ch == nil {
+		return false
+	}
+	select {
+	case ch <- struct{}{}:
+		return true
+	default:
+		return false // already approved
+	}
 }
 
 // Get returns a snapshot copy of a run, or nil when unknown.
@@ -166,6 +194,7 @@ func (e *Engine) Get(id string) *Run {
 	cp := *r
 	cp.cancel = nil
 	cp.ws = nil
+	cp.approve = nil
 	cp.Steps = append([]Step(nil), r.Steps...)
 	cp.Files = append([]string(nil), r.Files...)
 	cp.Log = append([]string(nil), r.Log...)
@@ -280,9 +309,20 @@ func (e *Engine) wsOf(id string) *Workspace {
 	return nil
 }
 
-// loop is the whole agent: plan, execute each step with tools,
-// inspect the workspace, fix once if inspection objects.
-func (e *Engine) loop(ctx context.Context, id, task string) {
+// approveChan returns a run's approval channel (set once at Start).
+func (e *Engine) approveChan(id string) chan struct{} {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if r, ok := e.runs[id]; ok {
+		return r.approve
+	}
+	return nil
+}
+
+// loop is the whole agent: plan, (optionally wait for approval,) execute
+// each step with tools, inspect the workspace, fix once if inspection
+// objects.
+func (e *Engine) loop(ctx context.Context, id, task string, autoStart bool) {
 	fail := func(err error) {
 		msg := err.Error()
 		if ctx.Err() != nil {
@@ -306,6 +346,19 @@ func (e *Engine) loop(ctx context.Context, id, task string) {
 	steps := make([]Step, len(titles))
 	for i, t := range titles {
 		steps[i] = Step{Title: t, Status: StepPending}
+	}
+
+	// A7: show the plan and wait for approval before doing any work.
+	if !autoStart {
+		e.update(id, func(r *Run) { r.Steps = steps; r.Status = StatusPlanned })
+		ch := e.approveChan(id)
+		select {
+		case <-ch:
+			// approved — fall through to execution
+		case <-ctx.Done():
+			fail(fmt.Errorf("cancelled before approval"))
+			return
+		}
 	}
 	e.update(id, func(r *Run) { r.Steps = steps; r.Status = StatusExecuting })
 

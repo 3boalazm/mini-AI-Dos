@@ -397,6 +397,7 @@ const chatHTML = `<!doctype html>
   // real cancellation.
   var PHASES = {
     planning: 'بيفهم المهمة وبيخطط…',
+    planned: 'الخطة جاهزة — راجعها واضغط ابدأ:',
     executing: 'بينفذ الخطة…',
     inspecting: 'بيراجع شغله…',
     fixing: 'بيصلح المشاكل اللي لقاها…'
@@ -440,21 +441,26 @@ const chatHTML = `<!doctype html>
     c.appendChild(activityEl);
     var a = document.createElement('div');
     a.className = 'actions';
-    a.appendChild(actionBtn('إيقاف', 'danger', function () {
-      if (state.runId) {
-        fetch('/v1/agent/runs/' + state.runId + '/cancel', {
-          method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + key }
-        }).catch(function () {});
-      }
-    }));
+    function stopBtn() {
+      a.textContent = '';
+      a.appendChild(actionBtn('إيقاف', 'danger', function () {
+        if (state.runId) {
+          fetch('/v1/agent/runs/' + state.runId + '/cancel', {
+            method: 'POST', headers: { 'Authorization': 'Bearer ' + key }
+          }).catch(function () {});
+        }
+      }));
+    }
+    stopBtn();
     c.appendChild(a);
     var t0 = Date.now();
 
+    // A7: create the run gated (auto_start:false) so it stops at the
+    // plan for approval; the approval buttons replace Stop when planned.
     fetch('/v1/agent/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-      body: JSON.stringify({ task: text })
+      body: JSON.stringify({ task: text, auto_start: false })
     }).then(function (r) {
       return r.json().then(function (d) { return { ok: r.ok, status: r.status, data: d }; });
     }).then(function (res) {
@@ -469,7 +475,7 @@ const chatHTML = `<!doctype html>
         return;
       }
       state.runId = res.data.id;
-      pollRun(key, phase, stepsEl, activityEl, t0);
+      pollRun(key, phase, stepsEl, activityEl, a, stopBtn, t0);
     }).catch(function (err) {
       dropCard();
       errorCard('فشل الاتصال: ' + err.message);
@@ -633,8 +639,10 @@ const chatHTML = `<!doctype html>
     el.scrollTop = el.scrollHeight;
   }
 
-  function pollRun(key, phase, stepsEl, activityEl, t0) {
-    state.poll = setTimeout(function tick() {
+  function pollRun(key, phase, stepsEl, activityEl, actionsEl, stopBtn, t0) {
+    var awaitingApproval = false;
+    function resume() { state.poll = setTimeout(tick, 300); }
+    function tick() {
       fetch('/v1/agent/runs/' + state.runId, { headers: { 'Authorization': 'Bearer ' + key } })
         .then(function (r) { return r.json(); })
         .then(function (run) {
@@ -642,6 +650,32 @@ const chatHTML = `<!doctype html>
           if (PHASES[run.status]) { phase.textContent = PHASES[run.status]; }
           if (run.steps && run.steps.length) { renderSteps(stepsEl, run.steps); }
           renderActivity(activityEl, run.log);
+
+          // A7 plan gate: show approve/cancel and pause polling until the
+          // user decides.
+          if (run.status === 'planned') {
+            if (!awaitingApproval) {
+              awaitingApproval = true;
+              actionsEl.textContent = '';
+              actionsEl.appendChild(actionBtn('▶ ابدأ التنفيذ', 'primary', function () {
+                actionsEl.textContent = '';
+                stopBtn();
+                fetch('/v1/agent/runs/' + state.runId + '/approve', {
+                  method: 'POST', headers: { 'Authorization': 'Bearer ' + key }
+                }).then(function () { awaitingApproval = false; resume(); })
+                  .catch(function () { errorCard('تعذّر بدء التنفيذ'); });
+              }));
+              actionsEl.appendChild(actionBtn('إلغاء', '', function () {
+                fetch('/v1/agent/runs/' + state.runId + '/cancel', {
+                  method: 'POST', headers: { 'Authorization': 'Bearer ' + key }
+                }).catch(function () {});
+                state.runId = null;
+                dropCard();
+                setStatus('idle');
+              }));
+            }
+            return; // paused: no re-poll while awaiting the user
+          }
           if (run.status === 'completed') {
             state.runId = null;
             var doneId = run.id;
@@ -667,7 +701,8 @@ const chatHTML = `<!doctype html>
           state.poll = setTimeout(tick, 1500);
         })
         .catch(function () { state.poll = setTimeout(tick, 3000); });
-    }, 1200);
+    }
+    state.poll = setTimeout(tick, 1200);
   }
 
   // ---- Controls: Send, Stop (in the working card), Retry (in the

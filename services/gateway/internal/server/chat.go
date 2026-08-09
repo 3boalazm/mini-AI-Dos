@@ -68,6 +68,11 @@ const chatHTML = `<!doctype html>
   .code .lang { position: absolute; top: .3rem; left: .6rem; font-size: .68rem; opacity: .55; text-transform: lowercase; }
   .copybtn { position: absolute; top: .25rem; right: .35rem; font-size: .7rem; padding: .15rem .55rem; border-radius: 5px; border: 1px solid rgba(127,127,127,.4); background: rgba(127,127,127,.15); color: inherit; cursor: pointer; }
   .meta { font-size: .7rem; opacity: .6; margin-top: .4rem; direction: ltr; text-align: left; }
+  .files { margin-top: .5rem; border-top: 1px dashed rgba(127,127,127,.3); padding-top: .4rem; }
+  .files .ftitle { font-size: .74rem; opacity: .7; margin-bottom: .3rem; }
+  .filebtn { display: inline-block; direction: ltr; font-size: .74rem; margin: .12rem; padding: .12rem .5rem; border-radius: 5px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; font-family: ui-monospace, monospace; }
+  .preview { margin-top: .5rem; }
+  .preview iframe { width: 100%; height: 22rem; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; background: #fff; }
   form { display: flex; gap: .5rem; padding: .8rem 1rem; border-top: 1px solid rgba(127,127,127,.25); }
   textarea { flex: 1; resize: none; padding: .6rem .8rem; border-radius: 10px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; font: inherit; height: 3rem; }
   form button { padding: 0 1.2rem; border-radius: 10px; border: 0; background: #3b82f6; color: #fff; font: inherit; cursor: pointer; }
@@ -458,6 +463,62 @@ const chatHTML = `<!doctype html>
     });
   }
 
+  // File tree under a completed agent run. Clicking a file fetches it
+  // from the run's workspace; .html renders in a sandboxed iframe (no
+  // same-origin, so generated markup can't touch the gateway), other
+  // files show as a copyable code block.
+  function addFileTree(bubble, runId, files, key) {
+    var box = document.createElement('div');
+    box.className = 'files';
+    var title = document.createElement('div');
+    title.className = 'ftitle';
+    title.textContent = '📁 ملفات المشروع';
+    box.appendChild(title);
+    var preview = document.createElement('div');
+    preview.className = 'preview';
+
+    for (var i = 0; i < files.length; i++) {
+      (function (path) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'filebtn';
+        b.textContent = path;
+        b.onclick = function () {
+          fetch('/v1/agent/runs/' + runId + '/files/' + path, { headers: { 'Authorization': 'Bearer ' + key } })
+            .then(function (r) { return r.text(); })
+            .then(function (content) {
+              preview.textContent = '';
+              if (/\.html?$/i.test(path)) {
+                var frame = document.createElement('iframe');
+                frame.setAttribute('sandbox', 'allow-scripts');
+                frame.srcdoc = content;
+                preview.appendChild(frame);
+              } else {
+                var wrap = document.createElement('div');
+                wrap.className = 'code';
+                var cb = document.createElement('button');
+                cb.className = 'copybtn';
+                cb.type = 'button';
+                cb.textContent = 'نسخ';
+                cb.onclick = function () { copyText(content, cb); };
+                wrap.appendChild(cb);
+                var pre = document.createElement('pre');
+                var code = document.createElement('code');
+                code.textContent = content;
+                pre.appendChild(code);
+                wrap.appendChild(pre);
+                preview.appendChild(wrap);
+              }
+              log.scrollTop = log.scrollHeight;
+            }).catch(function () {});
+        };
+        box.appendChild(b);
+      })(files[i]);
+    }
+    box.appendChild(preview);
+    bubble.appendChild(box);
+  }
+
   function pollRun(key, phase, stepsEl, t0) {
     state.poll = setTimeout(function tick() {
       fetch('/v1/agent/runs/' + state.runId, { headers: { 'Authorization': 'Bearer ' + key } })
@@ -468,11 +529,14 @@ const chatHTML = `<!doctype html>
           if (run.steps && run.steps.length) { renderSteps(stepsEl, run.steps); }
           if (run.status === 'completed') {
             state.runId = null;
+            var doneId = run.id;
             dropCard();
             var bubble = add('assistant', run.result || '(مفيش نتيجة)');
+            if (run.files && run.files.length) { addFileTree(bubble, doneId, run.files, key); }
             var m = document.createElement('div');
             m.className = 'meta';
-            m.textContent = 'agent · ' + (run.steps ? run.steps.length : 0) + ' steps · ' + ((Date.now() - t0) / 1000).toFixed(0) + 's';
+            m.textContent = 'agent · ' + (run.steps ? run.steps.length : 0) + ' steps · ' +
+              (run.files ? run.files.length : 0) + ' files · ' + ((Date.now() - t0) / 1000).toFixed(0) + 's';
             bubble.appendChild(m);
             setStatus('done');
             return;

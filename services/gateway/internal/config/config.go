@@ -61,6 +61,10 @@ type Config struct {
 	// the default leans generous; deployments tune it down when their
 	// traffic is short-form.
 	AITimeout time.Duration
+	// AgentWorkspaceDir roots the per-run file workspaces the agent
+	// loop writes into (AGENT_WORKSPACE_DIR). Empty falls back to a
+	// temp directory chosen by the agent engine.
+	AgentWorkspaceDir string
 	// Env selects log format: "development" (text) or anything else
 	// (JSON). APP_ENV, default "development".
 	Env string
@@ -83,6 +87,7 @@ func Load(l *foundationconfig.Loader) (*Config, error) {
 		AIBaseURL:         l.OptionalString("AI_BASE_URL", "https://api.openai.com/v1"),
 		AIModel:           l.OptionalString("AI_MODEL", ""),
 		AITimeout:         time.Duration(l.OptionalInt("AI_TIMEOUT", 120)) * time.Second,
+		AgentWorkspaceDir: l.OptionalString("AGENT_WORKSPACE_DIR", ""),
 		Env:               l.OptionalString("APP_ENV", "development"),
 		LogLevel:          l.OptionalString("LOG_LEVEL", "info"),
 		RateLimitEnabled:  parseBool(l.OptionalString("RATE_LIMIT_ENABLED", "false")),

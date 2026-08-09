@@ -47,8 +47,9 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, run)
 }
 
-// handleAgentRun serves GET /v1/agent/runs/{id} (poll snapshot) and
-// POST /v1/agent/runs/{id}/cancel (real cancellation).
+// handleAgentRun serves the per-run routes under /v1/agent/runs/{id}:
+// POST .../cancel (real cancellation), GET .../files/{path} (fetch one
+// workspace file), and GET .../{id} (poll snapshot).
 func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/agent/runs/")
 
@@ -66,6 +67,11 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if idx := strings.Index(rest, "/files/"); idx >= 0 {
+		s.serveRunFile(w, r, rest[:idx], rest[idx+len("/files/"):])
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeError(w, errors.New(errors.CodeValidation, "method not allowed: use GET"))
@@ -77,4 +83,29 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, run)
+}
+
+// serveRunFile returns one file from a run's workspace as text/plain.
+// It is served with nosniff and never as HTML, so generated markup
+// cannot execute in the gateway's own origin — the UI previews it in a
+// sandboxed iframe instead.
+func (s *Server) serveRunFile(w http.ResponseWriter, r *http.Request, id, path string) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeError(w, errors.New(errors.CodeValidation, "method not allowed: use GET"))
+		return
+	}
+	content, known, err := s.agent.ReadRunFile(id, path)
+	if !known {
+		writeError(w, errors.New(errors.CodeNotFound, "no such agent run"))
+		return
+	}
+	if err != nil {
+		writeError(w, errors.New(errors.CodeNotFound, err.Error()))
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(content))
 }

@@ -54,7 +54,7 @@ func TestParsePlan(t *testing.T) {
 		`["a","b","c"]`: {"a", "b", "c"},
 		"Sure! Here is the plan:\n[\"x\", \"y\"]":   {"x", "y"},
 		`["one","","  ","two"]`:                     {"one", "two"},
-		`["1","2","3","4","5","6","7","8"]`:         {"1", "2", "3", "4", "5", "6"},
+		`["1","2","3","4","5","6","7","8"]`:         {"1", "2", "3", "4", "5"},
 		"no json here":                              nil,
 		`{"steps":["not","an","array","of","top"]}`: {"not", "an", "array", "of", "top"},
 	}
@@ -79,7 +79,7 @@ func TestRun_HappyPath_PlanExecuteInspectOK(t *testing.T) {
 		"work for step two",       // execute 2
 		"OK",                      // inspect passes → no fix call
 	}}
-	e := NewEngine(p, "test-model", testLog())
+	e := NewEngine(p, "test-model", t.TempDir(), testLog())
 
 	run, err := e.Start("build something")
 	if err != nil {
@@ -107,7 +107,7 @@ func TestRun_InspectionFailure_TriggersFix(t *testing.T) {
 		"the navbar is off",  // inspect objects
 		"fixed final result", // fix output becomes the result
 	}}
-	e := NewEngine(p, "test-model", testLog())
+	e := NewEngine(p, "test-model", t.TempDir(), testLog())
 
 	run, err := e.Start("build a page")
 	if err != nil {
@@ -125,19 +125,53 @@ func TestRun_InspectionFailure_TriggersFix(t *testing.T) {
 	}
 }
 
+func TestRun_ToolLoop_ProducesFiles(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`["create the page"]`, // plan → one step
+		`{"tool":"write_file","args":{"path":"index.html","content":"<h1>hi</h1>"}}`, // execute: write
+		`{"tool":"done","args":{"summary":"wrote index.html"}}`,                      // execute: done
+		"OK", // inspect passes
+	}}
+	e := NewEngine(p, "test-model", t.TempDir(), testLog())
+
+	run, err := e.Start("build a page")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	final := waitFor(t, e, run.ID, StatusCompleted)
+	if final.Status != StatusCompleted {
+		t.Fatalf("status: got %s (error %q), want completed", final.Status, final.Error)
+	}
+	if len(final.Files) != 1 || final.Files[0] != "index.html" {
+		t.Fatalf("workspace files: got %v, want [index.html]", final.Files)
+	}
+	if !strings.Contains(final.Result, "index.html") {
+		t.Errorf("result should mention the built file, got %q", final.Result)
+	}
+
+	// The file must be readable back through the engine.
+	content, known, err := e.ReadRunFile(run.ID, "index.html")
+	if !known || err != nil {
+		t.Fatalf("ReadRunFile: known=%v err=%v", known, err)
+	}
+	if content != "<h1>hi</h1>" {
+		t.Errorf("file content: got %q", content)
+	}
+}
+
 func TestStart_Validation(t *testing.T) {
-	e := NewEngine(&scriptedProvider{responses: []string{"x"}}, "test-model", testLog())
+	e := NewEngine(&scriptedProvider{responses: []string{"x"}}, "test-model", t.TempDir(), testLog())
 	if _, err := e.Start("   "); err == nil {
 		t.Error("empty task should be rejected")
 	}
-	noModel := NewEngine(&scriptedProvider{responses: []string{"x"}}, "", testLog())
+	noModel := NewEngine(&scriptedProvider{responses: []string{"x"}}, "", t.TempDir(), testLog())
 	if _, err := noModel.Start("task"); err == nil {
 		t.Error("engine without a model should reject runs")
 	}
 }
 
 func TestGet_UnknownAndSnapshotIsolation(t *testing.T) {
-	e := NewEngine(&scriptedProvider{responses: []string{`["a"]`, "w", "OK"}}, "m", testLog())
+	e := NewEngine(&scriptedProvider{responses: []string{`["a"]`, "w", "OK"}}, "m", t.TempDir(), testLog())
 	if e.Get("nope") != nil {
 		t.Error("unknown id should return nil")
 	}

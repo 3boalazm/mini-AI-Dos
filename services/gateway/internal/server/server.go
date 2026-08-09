@@ -66,7 +66,7 @@ func New(cfg *config.Config, log *logging.Logger, p provider.Provider, repo stor
 		s.limiter = ratelimit.New(cfg.RateLimitRequests, cfg.RateLimitWindow, util.RealClock{})
 	}
 
-	s.agent = agent.NewEngine(p, cfg.AIModel, log)
+	s.agent = agent.NewEngine(p, cfg.AIModel, cfg.AgentWorkspaceDir, log)
 
 	mux := http.NewServeMux()
 	mux.Handle("/", http.HandlerFunc(s.handleRoot))

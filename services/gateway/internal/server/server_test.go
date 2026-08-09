@@ -22,11 +22,12 @@ const testAPIKey = "test-gateway-key"
 func newTestServer(t *testing.T, mutate func(*config.Config)) http.Handler {
 	t.Helper()
 	cfg := &config.Config{
-		Port:     8080,
-		APIKey:   testAPIKey,
-		Provider: config.ProviderMock,
-		Env:      "development",
-		LogLevel: "error",
+		Port:              8080,
+		APIKey:            testAPIKey,
+		Provider:          config.ProviderMock,
+		Env:               "development",
+		LogLevel:          "error",
+		AgentWorkspaceDir: t.TempDir(),
 	}
 	if mutate != nil {
 		mutate(cfg)
@@ -325,9 +326,10 @@ func TestAgentRun_EndToEndWithMock(t *testing.T) {
 			t.Fatalf("poll: got %d — body: %s", rec.Code, rec.Body.String())
 		}
 		var run struct {
-			Status string `json:"status"`
-			Result string `json:"result"`
-			Error  string `json:"error"`
+			Status string   `json:"status"`
+			Result string   `json:"result"`
+			Error  string   `json:"error"`
+			Files  []string `json:"files"`
 			Steps  []struct{ Status string }
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &run); err != nil {
@@ -336,6 +338,23 @@ func TestAgentRun_EndToEndWithMock(t *testing.T) {
 		if run.Status == "completed" {
 			if run.Result == "" {
 				t.Error("completed run should carry a result")
+			}
+			// A file the run wrote must be fetchable; an unknown one 404s.
+			if len(run.Files) > 0 {
+				fr := doJSON(t, h, http.MethodGet, "/v1/agent/runs/"+created.ID+"/files/"+run.Files[0], testAPIKey, "")
+				if fr.Code != http.StatusOK {
+					t.Errorf("fetch workspace file: got %d, want 200", fr.Code)
+				}
+				if ct := fr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+					t.Errorf("workspace file should be served as text/plain, got %q", ct)
+				}
+				if fr.Header().Get("X-Content-Type-Options") != "nosniff" {
+					t.Error("workspace file must be served with nosniff")
+				}
+			}
+			miss := doJSON(t, h, http.MethodGet, "/v1/agent/runs/"+created.ID+"/files/nope.txt", testAPIKey, "")
+			if miss.Code != http.StatusNotFound {
+				t.Errorf("missing workspace file: got %d, want 404", miss.Code)
 			}
 			return
 		}

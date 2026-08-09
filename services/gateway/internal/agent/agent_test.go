@@ -79,9 +79,11 @@ func TestParsePlan(t *testing.T) {
 func TestRun_HappyPath_PlanExecuteInspectOK(t *testing.T) {
 	p := &scriptedProvider{responses: []string{
 		`["step one","step two"]`, // plan
-		"work for step one",       // execute 1
-		"work for step two",       // execute 2
-		"OK",                      // inspect passes → no fix call
+		`{"tool":"write_file","args":{"path":"a.txt","content":"one"}}`, // execute 1
+		`{"tool":"done","args":{"summary":"did one"}}`,
+		`{"tool":"write_file","args":{"path":"b.txt","content":"two"}}`, // execute 2
+		`{"tool":"done","args":{"summary":"did two"}}`,
+		"OK", // inspect passes → no fix call
 	}}
 	e := NewEngine(p, "test-model", t.TempDir(), testLog())
 
@@ -96,20 +98,23 @@ func TestRun_HappyPath_PlanExecuteInspectOK(t *testing.T) {
 	if len(final.Steps) != 2 || final.Steps[0].Status != StepDone || final.Steps[1].Status != StepDone {
 		t.Errorf("steps not all done: %+v", final.Steps)
 	}
-	if !strings.Contains(final.Result, "work for step one") || !strings.Contains(final.Result, "work for step two") {
-		t.Errorf("result should accumulate step outputs, got %q", final.Result)
+	// Result is built from the real filesystem, not model prose.
+	if !strings.Contains(final.Result, "a.txt") || !strings.Contains(final.Result, "b.txt") {
+		t.Errorf("result should list the actual files, got %q", final.Result)
 	}
-	if p.calls != 4 {
-		t.Errorf("call count: got %d, want 4 (no fix call when inspection passes)", p.calls)
+	if len(final.Files) != 2 {
+		t.Errorf("expected 2 files, got %v", final.Files)
 	}
 }
 
 func TestRun_InspectionFailure_TriggersFix(t *testing.T) {
 	p := &scriptedProvider{responses: []string{
-		"not a plan at all",  // plan → fallback single step
-		"first draft",        // execute the fallback step
-		"the navbar is off",  // inspect objects
-		"fixed final result", // fix output becomes the result
+		`["build the page"]`, // plan
+		`{"tool":"write_file","args":{"path":"index.html","content":"<h1>hi</h1>"}}`, // execute
+		`{"tool":"done","args":{"summary":"built"}}`,
+		"the page needs a heading fix",                                                  // inspect objects → fix runs
+		`{"tool":"write_file","args":{"path":"index.html","content":"<h1>Fixed</h1>"}}`, // fix
+		`{"tool":"done","args":{"summary":"fixed"}}`,
 	}}
 	e := NewEngine(p, "test-model", t.TempDir(), testLog())
 
@@ -121,11 +126,13 @@ func TestRun_InspectionFailure_TriggersFix(t *testing.T) {
 	if final.Status != StatusCompleted {
 		t.Fatalf("status: got %s (error %q), want completed", final.Status, final.Error)
 	}
-	if len(final.Steps) != 1 {
-		t.Errorf("fallback plan should be one step, got %+v", final.Steps)
+	// The fix stage edited index.html, so Changes should record it.
+	if len(final.Changes) == 0 {
+		t.Errorf("fix stage edited a file but Changes is empty")
 	}
-	if final.Result != "fixed final result" {
-		t.Errorf("result should be the fixed deliverable, got %q", final.Result)
+	c, _, _ := e.ReadRunFile(run.ID, "index.html")
+	if c != "<h1>Fixed</h1>" {
+		t.Errorf("fix should have been applied, got %q", c)
 	}
 }
 
@@ -318,7 +325,8 @@ func TestZipRun(t *testing.T) {
 func TestRun_PlanGate_WaitsThenApproves(t *testing.T) {
 	p := &scriptedProvider{responses: []string{
 		`["step one","step two"]`, // plan
-		"work one", "work two",    // execute (after approval)
+		`{"tool":"write_file","args":{"path":"a.txt","content":"1"}}`, `{"tool":"done","args":{"summary":"s1"}}`,
+		`{"tool":"write_file","args":{"path":"b.txt","content":"2"}}`, `{"tool":"done","args":{"summary":"s2"}}`,
 		"OK", // inspect
 	}}
 	e := NewEngine(p, "m", t.TempDir(), testLog())
@@ -381,6 +389,7 @@ func TestRun_ApprovalGate_AllowRunsCommand(t *testing.T) {
 	p := &scriptedProvider{responses: []string{
 		`["setup"]`,
 		`{"tool":"run_command","args":{"command":"git init"}}`, // sensitive → gate
+		`{"tool":"write_file","args":{"path":"setup.txt","content":"ready"}}`,
 		`{"tool":"done","args":{"summary":"initialised"}}`,
 		"OK",
 	}}
@@ -411,8 +420,9 @@ func TestRun_ApprovalGate_AllowRunsCommand(t *testing.T) {
 func TestRun_ApprovalGate_DenyReturnsToModel(t *testing.T) {
 	p := &scriptedProvider{responses: []string{
 		`["setup"]`,
-		`{"tool":"run_command","args":{"command":"rm -rf important"}}`, // denied
-		`{"tool":"done","args":{"summary":"gave up on deleting"}}`,     // model adapts
+		`{"tool":"run_command","args":{"command":"rm -rf important"}}`,               // denied
+		`{"tool":"write_file","args":{"path":"note.txt","content":"did it safely"}}`, // model adapts
+		`{"tool":"done","args":{"summary":"gave up on deleting"}}`,
 		"OK",
 	}}
 	e := NewEngine(p, "m", t.TempDir(), testLog())
@@ -433,6 +443,7 @@ func TestRun_ApprovalGate_AlwaysAllowSkipsSecondPrompt(t *testing.T) {
 		`["setup"]`,
 		`{"tool":"run_command","args":{"command":"git add ."}}`,       // first git → gate
 		`{"tool":"run_command","args":{"command":"git commit -m x"}}`, // second git → should NOT gate
+		`{"tool":"write_file","args":{"path":"committed.txt","content":"x"}}`,
 		`{"tool":"done","args":{"summary":"committed"}}`,
 		"OK",
 	}}
@@ -505,6 +516,7 @@ func TestRun_ErrorRecovery_FailThenSucceed(t *testing.T) {
 	// the result should lead with the recovery note, not a raw dump.
 	p := &scriptedProvider{responses: []string{
 		`["run a build step"]`,
+		`{"tool":"write_file","args":{"path":"out.txt","content":"ok"}}`,              // a real artifact
 		`{"tool":"run_command","args":{"command":"this_command_does_not_exist_xyz"}}`, // fails
 		`{"tool":"run_command","args":{"command":"echo recovered-ok"}}`,               // succeeds
 		`{"tool":"done","args":{"summary":"fixed and re-ran"}}`,
@@ -534,6 +546,7 @@ func TestRun_ErrorRecovery_FailThenSucceed(t *testing.T) {
 func TestRun_NoRecovery_WhenNoFailure(t *testing.T) {
 	p := &scriptedProvider{responses: []string{
 		`["step"]`,
+		`{"tool":"write_file","args":{"path":"ok.txt","content":"x"}}`,
 		`{"tool":"run_command","args":{"command":"echo all-good"}}`,
 		`{"tool":"done","args":{"summary":"ok"}}`,
 		"OK",

@@ -49,6 +49,9 @@ const (
 	maxRuns = 25
 	// maxLogEntries caps the per-run tool-activity log kept for the UI.
 	maxLogEntries = 40
+	// maxNudges is how many times an execute step re-prompts a model
+	// that narrated instead of emitting a tool call.
+	maxNudges = 2
 )
 
 // rateBackoff is the wait schedule between retries when the upstream
@@ -103,19 +106,20 @@ type Step struct {
 // Run is one agent task from request to result. Snapshots returned by
 // the engine are copies — callers never share memory with the loop.
 type Run struct {
-	ID        string       `json:"id"`
-	Task      string       `json:"task"`
-	Status    Status       `json:"status"`
-	Steps     []Step       `json:"steps"`
-	Files     []string     `json:"files"`
-	Log       []string     `json:"log,omitempty"`
-	Pending   *Approval    `json:"pending,omitempty"`
-	CmdErrors int          `json:"cmd_errors,omitempty"`
-	Recovered bool         `json:"recovered,omitempty"`
-	Changes   []FileChange `json:"changes,omitempty"`
-	Result    string       `json:"result,omitempty"`
-	Error     string       `json:"error,omitempty"`
-	Created   int64        `json:"created"`
+	ID           string       `json:"id"`
+	Task         string       `json:"task"`
+	Status       Status       `json:"status"`
+	Steps        []Step       `json:"steps"`
+	Files        []string     `json:"files"`
+	Log          []string     `json:"log,omitempty"`
+	Pending      *Approval    `json:"pending,omitempty"`
+	CmdErrors    int          `json:"cmd_errors,omitempty"`
+	Recovered    bool         `json:"recovered,omitempty"`
+	Changes      []FileChange `json:"changes,omitempty"`
+	Verification []string     `json:"verification,omitempty"`
+	Result       string       `json:"result,omitempty"`
+	Error        string       `json:"error,omitempty"`
+	Created      int64        `json:"created"`
 
 	cancel        context.CancelFunc
 	ws            *Workspace
@@ -332,6 +336,7 @@ func (e *Engine) Get(id string) *Run {
 	cp.Files = append([]string(nil), r.Files...)
 	cp.Log = append([]string(nil), r.Log...)
 	cp.Changes = append([]FileChange(nil), r.Changes...)
+	cp.Verification = append([]string(nil), r.Verification...)
 	if r.Pending != nil {
 		p := *r.Pending
 		cp.Pending = &p
@@ -559,15 +564,12 @@ func (e *Engine) loop(ctx context.Context, id, task string, autoStart bool) {
 	}
 	e.update(id, func(r *Run) { r.Steps = steps; r.Status = StatusExecuting })
 
-	var summaries []string
 	for i, title := range titles {
 		e.update(id, func(r *Run) { r.Steps[i].Status = StepActive })
-		summary, err := e.executeStep(ctx, id, ws, task, titles, i)
-		if err != nil {
+		if _, err := e.executeStep(ctx, id, ws, task, titles, i); err != nil {
 			fail(err)
 			return
 		}
-		summaries = append(summaries, summary)
 		files, _ := ws.List()
 		e.update(id, func(r *Run) {
 			r.Steps[i].Status = StepDone
@@ -577,7 +579,14 @@ func (e *Engine) loop(ctx context.Context, id, task string, autoStart bool) {
 	}
 
 	files, _ := ws.List()
-	hasFiles := len(files) > 0
+
+	// The completion gate: a build agent that produced no files did not
+	// succeed, no matter what the model narrated. The system decides
+	// success from the real filesystem — the model can't declare it.
+	if len(files) == 0 {
+		fail(fmt.Errorf("لم يُنتَج أي ملف — الوكيل وصف العمل بدل ما ينفّذه. جرّب تاني أو صيغ الطلب بوضوح."))
+		return
+	}
 
 	// A10: snapshot the post-build workspace, so any changes the fix
 	// stage makes can be summarized, compared, and reverted.
@@ -585,56 +594,38 @@ func (e *Engine) loop(ctx context.Context, id, task string, autoStart bool) {
 	e.update(id, func(r *Run) { r.buildSnap = buildSnap })
 
 	e.update(id, func(r *Run) { r.Status = StatusInspecting })
-	deliverable := ws.Dump(inspectDumpLimit)
-	if !hasFiles {
-		deliverable = strings.Join(summaries, "\n\n")
-	}
 	// A4: ground the model's inspection in automated structural checks of
 	// the HTML it produced (broken links, missing assets, missing alt),
 	// so "See → Critique" catches concrete defects, not just vibes.
 	autoChecks := ws.InspectAllHTML()
-	verdict, err := e.inspect(ctx, task, deliverable, autoChecks)
+	verdict, err := e.inspect(ctx, task, ws.Dump(inspectDumpLimit), autoChecks)
 	if err != nil {
 		fail(err)
 		return
 	}
 
-	result := buildResult(summaries, files)
 	if !inspectionPassed(verdict) {
 		e.update(id, func(r *Run) { r.Status = StatusFixing })
-		if hasFiles {
-			if err := e.fixWithTools(ctx, id, ws, task, verdict); err != nil {
-				fail(err)
-				return
-			}
-			files, _ = ws.List()
-			result = buildResult(summaries, files)
-			// A10: record what the fix stage changed vs the build.
-			changes := diffSnapshots(buildSnap, ws.Snapshot())
-			e.update(id, func(r *Run) { r.Changes = changes })
-		} else {
-			// No files were produced — fall back to A1-style text fix so
-			// the run still yields something usable.
-			fixed, err := e.chat(ctx, fixTextSystem, "TASK:\n"+task+"\n\nDELIVERABLE:\n"+deliverable+"\n\nINSPECTION NOTES:\n"+verdict)
-			if err != nil {
-				fail(err)
-				return
-			}
-			result = fixed
+		if err := e.fixWithTools(ctx, id, ws, task, verdict); err != nil {
+			fail(err)
+			return
 		}
+		files, _ = ws.List()
+		changes := diffSnapshots(buildSnap, ws.Snapshot())
+		e.update(id, func(r *Run) { r.Changes = changes })
 	}
+
+	// Deterministic verification: the result is built from the real
+	// filesystem and these checks, never from the model's claims.
+	issues := ws.BrokenReferences()
 
 	e.update(id, func(r *Run) {
 		r.Status = StatusCompleted
-		// A9: report recovery as a one-line summary, not a raw error dump.
-		if r.Recovered {
-			r.Result = "⚠ واجه خطأ أثناء التنفيذ وتعافى منه تلقائيًا.\n\n" + result
-		} else {
-			r.Result = result
-		}
 		r.Files = files
+		r.Verification = issues
+		r.Result = buildResult(files, issues, r.Recovered)
 	})
-	e.log.Info("agent run completed", "run_id", id, "steps", len(titles), "files", len(files), "fixed", !inspectionPassed(verdict))
+	e.log.Info("agent run completed", "run_id", id, "steps", len(titles), "files", len(files), "issues", len(issues), "fixed", !inspectionPassed(verdict))
 }
 
 // chatMessages is one model call, retried with backoff on upstream
@@ -710,7 +701,7 @@ const execToolSystem = `You are the execution module of a build agent with a fil
 {"tool":"inspect_page","args":{"path":"index.html"}}
 When the current step is fully done, reply:
 {"tool":"done","args":{"summary":"what you did"}}
-Rules: relative paths only; produce real, complete file contents; run_command runs in the workspace; inspect_page checks an HTML file for broken links, missing assets, and missing alt/meta — use it to verify a page you built. If a run_command fails (non-zero EXIT or an ERROR result), read the output, fix the cause, and run it again — don't give up after one failure. Do this step's work then call done.`
+Rules: relative paths only; produce real, complete file contents; run_command runs in the workspace; inspect_page checks an HTML file for broken links, missing assets, and missing alt/meta — use it to verify a page you built. If a run_command fails (non-zero EXIT or an ERROR result), read the output, fix the cause, and run it again — don't give up after one failure. CRITICAL: describing a file does NOT create it — you must call write_file. Never claim the project is deployed, live, or hosted (you have no deployment tool), and never claim you tested something unless a tool actually ran it. Do this step's work then call done.`
 
 // executeStep runs the tool loop for one plan step and returns a short
 // summary of what it did.
@@ -728,6 +719,7 @@ func (e *Engine) executeStep(ctx context.Context, id string, ws *Workspace, task
 		{Role: provider.RoleSystem, Content: execToolSystem},
 		{Role: provider.RoleUser, Content: u.String()},
 	}
+	nudges := 0
 	for iter := 0; iter < maxToolCalls; iter++ {
 		out, err := e.chatMessages(ctx, msgs)
 		if err != nil {
@@ -735,11 +727,20 @@ func (e *Engine) executeStep(ctx context.Context, id string, ws *Workspace, task
 		}
 		tc := parseToolCall(out)
 		if tc == nil {
-			// No parseable tool call — treat the text as the step's
-			// summary, but never leak a raw/broken tool-call JSON (a
-			// model can emit invalid JSON that fails to parse) into the
-			// user-facing result; fall back to the step title then.
-			return cleanSummary(firstLine(out), titles[i]), nil
+			// The model narrated instead of acting. Describing a file is
+			// NOT creating it — nudge it to emit a real tool call rather
+			// than accepting the prose as done (the bug that let runs
+			// "succeed" with zero files). Give up the step after a couple
+			// of nudges; the run's file gate is the real backstop.
+			nudges++
+			if nudges > maxNudges {
+				return cleanSummary(titles[i], titles[i]), nil
+			}
+			msgs = append(msgs,
+				provider.Message{Role: provider.RoleAssistant, Content: out},
+				provider.Message{Role: provider.RoleUser, Content: "You did not emit a tool call. Describing the work does NOT perform it. Reply with EXACTLY one JSON tool call (e.g. {\"tool\":\"write_file\",\"args\":{\"path\":\"index.html\",\"content\":\"...\"}}) to actually create or edit files. Call {\"tool\":\"done\",...} only after the files exist."},
+			)
+			continue
 		}
 		if tc.Tool == "done" {
 			return cleanSummary(tc.str("summary"), titles[i]), nil
@@ -791,40 +792,35 @@ func (e *Engine) fixWithTools(ctx context.Context, id string, ws *Workspace, tas
 	return nil
 }
 
-const fixTextSystem = "You are the fixing module of a build agent. Given the task, the deliverable, and the inspection notes, output the corrected COMPLETE final deliverable only — no commentary."
-
 // inspectionPassed treats only a clear leading OK as a pass.
 func inspectionPassed(verdict string) bool {
 	v := strings.TrimSpace(verdict)
 	return v == "OK" || strings.HasPrefix(v, "OK\n") || strings.HasPrefix(v, "OK ")
 }
 
-// buildResult composes the human-facing result line from the step
-// summaries and the produced file tree.
-func buildResult(summaries, files []string) string {
+// buildResult composes the result from FACTS only — the real file
+// manifest and deterministic verification — never the model's claims.
+// This is what stops the agent reporting "deployed / live / tested"
+// when it did none of that.
+func buildResult(files, issues []string, recovered bool) string {
 	var b strings.Builder
-	if len(files) > 0 {
-		fmt.Fprintf(&b, "تم بناء %d ملف:\n", len(files))
-		for _, f := range files {
-			b.WriteString("• " + f + "\n")
+	if recovered {
+		b.WriteString("⚠ واجه خطأ أثناء التنفيذ وتعافى منه تلقائيًا.\n\n")
+	}
+	fmt.Fprintf(&b, "تم بناء %d ملف:\n", len(files))
+	for _, f := range files {
+		b.WriteString("• " + f + "\n")
+	}
+	b.WriteString("\nالتحقق:\n")
+	if len(issues) == 0 {
+		b.WriteString("✓ كل الروابط الداخلية والأصول سليمة")
+	} else {
+		fmt.Fprintf(&b, "✗ فيه %d مشكلة لسه محتاجة إصلاح:\n", len(issues))
+		for _, is := range issues {
+			b.WriteString("  • " + is + "\n")
 		}
 	}
-	trimmed := make([]string, 0, len(summaries))
-	for _, s := range summaries {
-		if s = strings.TrimSpace(s); s != "" {
-			trimmed = append(trimmed, "- "+s)
-		}
-	}
-	if len(trimmed) > 0 {
-		if b.Len() > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(strings.Join(trimmed, "\n"))
-	}
-	if b.Len() == 0 {
-		return "تم."
-	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // parsePlan extracts a JSON string array from raw model output,
@@ -872,14 +868,6 @@ func cleanSummary(s, fallback string) string {
 		return fallback
 	}
 	return t
-}
-
-func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return strings.TrimSpace(s[:i])
-	}
-	return s
 }
 
 func truncate(s string, n int) string {

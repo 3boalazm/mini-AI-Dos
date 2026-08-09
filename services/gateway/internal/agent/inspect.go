@@ -128,7 +128,64 @@ func inspectHTML(content string, exists func(string) bool) []string {
 		}
 	}
 
+	// Navigation to local .html pages that don't exist — the multi-page
+	// failure mode (nav to work.html / nova.html that were never built).
+	for _, m := range reAnyHref.FindAllStringSubmatch(content, -1) {
+		href := m[1]
+		if !isLocalRef(href) {
+			continue
+		}
+		clean := href
+		if idx := strings.IndexAny(clean, "#?"); idx >= 0 {
+			clean = clean[:idx]
+		}
+		lc := strings.ToLower(clean)
+		if !strings.HasSuffix(lc, ".html") && !strings.HasSuffix(lc, ".htm") {
+			continue // only page links here; assets are covered above
+		}
+		if !exists(clean) {
+			out = append(out, fmt.Sprintf("navigation link %q but that page is not in the workspace", href))
+		}
+	}
+
 	return out
+}
+
+// htmlish reports whether a path is an HTML file.
+func htmlish(path string) bool {
+	p := strings.ToLower(path)
+	return strings.HasSuffix(p, ".html") || strings.HasSuffix(p, ".htm")
+}
+
+// isBrokenRef reports whether an inspection finding is a broken
+// reference (a hard defect) rather than a style warning (alt/meta/etc).
+func isBrokenRef(finding string) bool {
+	return strings.Contains(finding, "not in the workspace") ||
+		strings.Contains(finding, "no element has that id") ||
+		strings.Contains(finding, "has no src")
+}
+
+// BrokenReferences returns concrete broken-reference issues across every
+// HTML file — the deterministic core of build verification (missing
+// stylesheets/scripts/images, dangling anchors, broken page links).
+func (w *Workspace) BrokenReferences() []string {
+	files, _ := w.List()
+	var issues []string
+	for _, f := range files {
+		if !htmlish(f) {
+			continue
+		}
+		content, err := w.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, finding := range inspectHTML(content, w.existsFor(f)) {
+			if isBrokenRef(finding) {
+				issues = append(issues, f+": "+finding)
+			}
+		}
+	}
+	return issues
 }
 
 // summarizeHTML returns a one-line structural summary (title, counts) to
@@ -180,9 +237,10 @@ func refRelativeTo(htmlPath, ref string) string {
 	return path.Join(path.Dir(htmlPath), ref)
 }
 
-// reportFor formats one page's summary and findings.
-func (w *Workspace) reportFor(htmlPath, content string) string {
-	exists := func(ref string) bool {
+// existsFor builds an existence check for references resolved relative
+// to one HTML file's location.
+func (w *Workspace) existsFor(htmlPath string) func(string) bool {
+	return func(ref string) bool {
 		full, err := w.resolve(refRelativeTo(htmlPath, ref))
 		if err != nil {
 			return false
@@ -190,7 +248,11 @@ func (w *Workspace) reportFor(htmlPath, content string) string {
 		_, statErr := os.Stat(full)
 		return statErr == nil
 	}
-	findings := inspectHTML(content, exists)
+}
+
+// reportFor formats one page's summary and findings.
+func (w *Workspace) reportFor(htmlPath, content string) string {
+	findings := inspectHTML(content, w.existsFor(htmlPath))
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s — %s\n", htmlPath, summarizeHTML(content))
 	if len(findings) == 0 {

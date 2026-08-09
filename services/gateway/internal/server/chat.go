@@ -509,6 +509,26 @@ const chatHTML = `<!doctype html>
     return p[p.length - 1] || path;
   }
 
+  // Deterministic verification issues (broken links/assets) the system
+  // found — shown truthfully rather than hidden behind a success claim.
+  function addVerification(bubble, issues) {
+    var box = document.createElement('div');
+    box.className = 'files';
+    var title = document.createElement('div');
+    title.className = 'ftitle';
+    title.style.color = '#d33';
+    title.textContent = '⚠ التحقق لقى ' + issues.length + ' مشكلة:';
+    box.appendChild(title);
+    for (var i = 0; i < issues.length; i++) {
+      var d = document.createElement('div');
+      d.className = 'step';
+      d.dir = 'auto';
+      d.textContent = '✗ ' + issues[i];
+      box.appendChild(d);
+    }
+    bubble.appendChild(box);
+  }
+
   // A10 change summary: what the fix stage changed vs the initial build,
   // with Compare (a unified diff) and Revert (undo the fixes).
   function addChanges(bubble, runId, changes, key) {
@@ -796,6 +816,7 @@ const chatHTML = `<!doctype html>
             var doneId = run.id;
             dropCard();
             var bubble = add('assistant', run.result || '(مفيش نتيجة)');
+            if (run.verification && run.verification.length) { addVerification(bubble, run.verification); }
             if (run.changes && run.changes.length) { addChanges(bubble, doneId, run.changes, key); }
             if (run.files && run.files.length) { addFileTree(bubble, doneId, run.files, key); }
             var m = document.createElement('div');

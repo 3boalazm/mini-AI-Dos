@@ -676,10 +676,27 @@ const chatHTML = `<!doctype html>
       actionsEl.appendChild(row);
     }
 
+    var pollErrors = 0;
     function tick() {
       fetch('/v1/agent/runs/' + state.runId, { headers: { 'Authorization': 'Bearer ' + key } })
-        .then(function (r) { return r.json(); })
-        .then(function (run) {
+        .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+        .then(function (res) {
+          // 404: the run no longer exists — the server restarted (runs are
+          // in-memory) or it was evicted. Stop cleanly instead of polling
+          // a dead id forever.
+          if (res.status === 404) {
+            state.runId = null;
+            dropCard();
+            errorCard('الـrun اتفقد — السيرفر أعاد التشغيل غالبًا (الـruns مؤقتة في الذاكرة). ابدأ من جديد.');
+            return;
+          }
+          if (res.status === 401) {
+            state.runId = null; dropCard(); clearKey();
+            waitingCard('المفتاح مرفوض — أدخل مفتاح صحيح.', function () {});
+            return;
+          }
+          pollErrors = 0;
+          var run = res.body;
           if (!run || !run.status) { throw new Error('bad snapshot'); }
           if (PHASES[run.status]) { phase.textContent = PHASES[run.status]; }
           if (run.steps && run.steps.length) { renderSteps(stepsEl, run.steps); }
@@ -741,7 +758,18 @@ const chatHTML = `<!doctype html>
           log.scrollTop = log.scrollHeight;
           state.poll = setTimeout(tick, 1500);
         })
-        .catch(function () { state.poll = setTimeout(tick, 3000); });
+        .catch(function () {
+          // Transient network/parse error — retry a few times, then give
+          // up rather than spam the console forever.
+          pollErrors++;
+          if (pollErrors > 5) {
+            state.runId = null;
+            dropCard();
+            errorCard('انقطع الاتصال بالـrun. جرّب من جديد.');
+            return;
+          }
+          state.poll = setTimeout(tick, 3000);
+        });
     }
     state.poll = setTimeout(tick, 1200);
   }

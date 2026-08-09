@@ -323,10 +323,28 @@ func TestAgentRun_PlanGate_ApproveFlow(t *testing.T) {
 		time.Sleep(15 * time.Millisecond)
 	}
 
-	// Approving releases it; a second approve is a no-op 404.
+	// Approving releases it into execution.
 	ap := doJSON(t, h, http.MethodPost, "/v1/agent/runs/"+created.ID+"/approve", testAPIKey, "")
 	if ap.Code != http.StatusOK {
 		t.Fatalf("approve: got %d, want 200", ap.Code)
+	}
+
+	// Once the run has left "planned", a second approve is a no-op 404.
+	// Wait for the transition first so the assertion isn't racing the
+	// loop's status update.
+	for {
+		pr := doJSON(t, h, http.MethodGet, "/v1/agent/runs/"+created.ID, testAPIKey, "")
+		var run struct {
+			Status string `json:"status"`
+		}
+		_ = json.Unmarshal(pr.Body.Bytes(), &run)
+		if run.Status != "planned" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("run stayed planned after approval")
+		}
+		time.Sleep(15 * time.Millisecond)
 	}
 	ap2 := doJSON(t, h, http.MethodPost, "/v1/agent/runs/"+created.ID+"/approve", testAPIKey, "")
 	if ap2.Code != http.StatusNotFound {

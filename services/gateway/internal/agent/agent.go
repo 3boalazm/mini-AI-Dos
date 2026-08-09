@@ -343,8 +343,10 @@ func (e *Engine) Cancel(id string) bool {
 	return true
 }
 
-// evictLocked removes the oldest run (and its workspace) once the cap
-// is exceeded. Caller holds the write lock.
+// evictLocked removes the oldest *finished* run (and its workspace) once
+// the cap is exceeded. In-flight runs are never evicted — a live run
+// must not vanish out from under the user just because newer runs were
+// created. Caller holds the write lock.
 func (e *Engine) evictLocked() {
 	if len(e.runs) <= maxRuns {
 		return
@@ -353,9 +355,15 @@ func (e *Engine) evictLocked() {
 	var oldest int64
 	first := true
 	for id, r := range e.runs {
+		if !isTerminal(r.Status) {
+			continue // only reclaim completed/failed runs
+		}
 		if first || r.Created < oldest {
 			oldest, oldestID, first = r.Created, id, false
 		}
+	}
+	if oldestID == "" {
+		return // nothing terminal to reclaim yet; let the map grow a little
 	}
 	if r, ok := e.runs[oldestID]; ok {
 		if r.ws != nil {
@@ -363,6 +371,11 @@ func (e *Engine) evictLocked() {
 		}
 		delete(e.runs, oldestID)
 	}
+}
+
+// isTerminal reports whether a run has reached a final status.
+func isTerminal(s Status) bool {
+	return s == StatusCompleted || s == StatusFailed
 }
 
 // update applies fn to a run under the write lock.

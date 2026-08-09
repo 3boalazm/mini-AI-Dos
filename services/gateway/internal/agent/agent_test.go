@@ -462,6 +462,43 @@ func TestDecide_UnknownOrNotAwaiting(t *testing.T) {
 	}
 }
 
+func TestEvict_NeverEvictsInFlightRuns(t *testing.T) {
+	// A provider that blocks on the plan call keeps runs in-flight, so we
+	// can pile up more than maxRuns live runs and confirm none are evicted.
+	block := make(chan struct{})
+	defer close(block)
+	bp := blockingProvider{gate: block}
+	e := NewEngine(bp, "m", t.TempDir(), testLog())
+
+	ids := make([]string, 0, maxRuns+5)
+	for i := 0; i < maxRuns+5; i++ {
+		r, err := e.Start("t", true)
+		if err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
+		ids = append(ids, r.ID)
+	}
+	// Every run is still planning (blocked) — none should have been evicted.
+	for _, id := range ids {
+		if e.Get(id) == nil {
+			t.Fatalf("in-flight run %s was evicted", id)
+		}
+	}
+}
+
+// blockingProvider blocks every call until gate is closed, keeping runs
+// pinned in the planning stage.
+type blockingProvider struct{ gate chan struct{} }
+
+func (b blockingProvider) Name() string { return "blocking" }
+func (b blockingProvider) ChatCompletion(ctx context.Context, _ *provider.ChatRequest) (*provider.ChatResponse, error) {
+	select {
+	case <-b.gate:
+	case <-ctx.Done():
+	}
+	return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.Message{Content: "OK"}}}}, nil
+}
+
 func TestStart_Validation(t *testing.T) {
 	e := NewEngine(&scriptedProvider{responses: []string{"x"}}, "test-model", t.TempDir(), testLog())
 	if _, err := e.Start("   ", true); err == nil {

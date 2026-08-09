@@ -17,9 +17,12 @@ func TestAllow_UnderLimit(t *testing.T) {
 	l := New(3, time.Minute, clock)
 
 	for i := 0; i < 3; i++ {
-		allowed, _ := l.Allow()
+		allowed, remaining, _ := l.Allow()
 		if !allowed {
 			t.Fatalf("request %d should be allowed under the limit", i+1)
+		}
+		if want := 3 - (i + 1); remaining != want {
+			t.Errorf("request %d remaining: got %d, want %d", i+1, remaining, want)
 		}
 	}
 }
@@ -32,9 +35,12 @@ func TestAllow_BlocksOverLimit_WithRetryAfter(t *testing.T) {
 	l.Allow()
 	clock.now = clock.now.Add(10 * time.Second)
 
-	allowed, retryAfter := l.Allow()
+	allowed, remaining, retryAfter := l.Allow()
 	if allowed {
 		t.Fatal("third request should be blocked")
+	}
+	if remaining != 0 {
+		t.Errorf("blocked request remaining: got %d, want 0", remaining)
 	}
 	if retryAfter != 50*time.Second {
 		t.Errorf("retryAfter: got %v, want 50s (window remainder)", retryAfter)
@@ -46,12 +52,12 @@ func TestAllow_WindowResets(t *testing.T) {
 	l := New(1, time.Minute, clock)
 
 	l.Allow()
-	if allowed, _ := l.Allow(); allowed {
+	if allowed, _, _ := l.Allow(); allowed {
 		t.Fatal("second request in the same window should be blocked")
 	}
 
 	clock.now = clock.now.Add(time.Minute)
-	if allowed, _ := l.Allow(); !allowed {
+	if allowed, _, _ := l.Allow(); !allowed {
 		t.Fatal("request after window reset should be allowed")
 	}
 }
@@ -63,7 +69,7 @@ func TestAllow_RetryAfterNeverBelowOneSecond(t *testing.T) {
 	l.Allow()
 	clock.now = clock.now.Add(time.Minute - 100*time.Millisecond)
 
-	allowed, retryAfter := l.Allow()
+	allowed, _, retryAfter := l.Allow()
 	if allowed {
 		t.Fatal("should still be blocked just before the window edge")
 	}

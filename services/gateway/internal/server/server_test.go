@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -231,8 +232,15 @@ func TestChat_RateLimit429(t *testing.T) {
 		c.RateLimitWindow = time.Minute
 	})
 	for i := 0; i < 2; i++ {
-		if rec := doJSON(t, h, http.MethodPost, "/v1/chat/completions", testAPIKey, validChat); rec.Code != http.StatusOK {
+		rec := doJSON(t, h, http.MethodPost, "/v1/chat/completions", testAPIKey, validChat)
+		if rec.Code != http.StatusOK {
 			t.Fatalf("request %d should pass, got %d", i+1, rec.Code)
+		}
+		if got, want := rec.Header().Get("X-RateLimit-Remaining"), strconv.Itoa(2-(i+1)); got != want {
+			t.Errorf("request %d X-RateLimit-Remaining: got %q, want %q", i+1, got, want)
+		}
+		if got := rec.Header().Get("X-RateLimit-Limit"); got != "2" {
+			t.Errorf("X-RateLimit-Limit: got %q, want \"2\"", got)
 		}
 	}
 	rec := doJSON(t, h, http.MethodPost, "/v1/chat/completions", testAPIKey, validChat)
@@ -241,6 +249,9 @@ func TestChat_RateLimit429(t *testing.T) {
 	}
 	if rec.Header().Get("Retry-After") == "" {
 		t.Error("429 should carry Retry-After")
+	}
+	if got := rec.Header().Get("X-RateLimit-Remaining"); got != "0" {
+		t.Errorf("429 X-RateLimit-Remaining: got %q, want \"0\"", got)
 	}
 	if code := errorCode(t, rec); code != "rate_limited" {
 		t.Errorf("error code: got %q", code)

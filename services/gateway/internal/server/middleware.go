@@ -167,7 +167,11 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		allowed, retryAfter := s.limiter.Allow()
+		allowed, remaining, retryAfter := s.limiter.Allow()
+		// Standard draft rate-limit headers on every limited response,
+		// allowed or not — clients (including /chat) surface them.
+		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(s.cfg.RateLimitRequests))
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
 		if !allowed {
 			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
 			writeError(w, errors.New(errors.CodeRateLimited, "rate limit exceeded, retry later"))

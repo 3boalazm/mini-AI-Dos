@@ -30,9 +30,11 @@ func New(limit int, window time.Duration, clock util.Clock) *Limiter {
 }
 
 // Allow reports whether one more request fits in the current window.
-// When it does not, retryAfter is how long until the window resets —
-// suitable for a Retry-After header, rounded up to a whole second.
-func (l *Limiter) Allow() (allowed bool, retryAfter time.Duration) {
+// remaining is how many further requests the window still accepts
+// after this one — suitable for an X-RateLimit-Remaining header. When
+// blocked, retryAfter is how long until the window resets — suitable
+// for a Retry-After header, rounded up to a whole second.
+func (l *Limiter) Allow() (allowed bool, remaining int, retryAfter time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -43,13 +45,13 @@ func (l *Limiter) Allow() (allowed bool, retryAfter time.Duration) {
 	}
 
 	if l.count >= l.limit {
-		remaining := l.window - now.Sub(l.windowStart)
-		if remaining < time.Second {
-			remaining = time.Second
+		left := l.window - now.Sub(l.windowStart)
+		if left < time.Second {
+			left = time.Second
 		}
-		return false, remaining
+		return false, 0, left
 	}
 
 	l.count++
-	return true, 0
+	return true, l.limit - l.count, 0
 }

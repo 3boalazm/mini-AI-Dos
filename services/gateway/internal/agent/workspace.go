@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"archive/zip"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -214,6 +216,32 @@ func (w *Workspace) Dump(limit int) string {
 		return "(empty workspace)"
 	}
 	return b.String()
+}
+
+// WriteZip streams every file in the workspace into w as a zip
+// archive, entries named by their slash-separated relative paths.
+func (w *Workspace) WriteZip(out io.Writer) error {
+	files, err := w.List()
+	if err != nil {
+		return err
+	}
+	zw := zip.NewWriter(out)
+	for _, f := range files {
+		content, readErr := w.ReadFile(f)
+		if readErr != nil {
+			continue // skip unreadable entries rather than abort the archive
+		}
+		fw, createErr := zw.Create(f)
+		if createErr != nil {
+			_ = zw.Close()
+			return createErr
+		}
+		if _, writeErr := io.WriteString(fw, content); writeErr != nil {
+			_ = zw.Close()
+			return writeErr
+		}
+	}
+	return zw.Close()
 }
 
 // Remove deletes the whole workspace tree.

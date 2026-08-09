@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -67,6 +68,11 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if id, ok := strings.CutSuffix(rest, "/zip"); ok {
+		s.serveRunZip(w, r, id)
+		return
+	}
+
 	if idx := strings.Index(rest, "/files/"); idx >= 0 {
 		s.serveRunFile(w, r, rest[:idx], rest[idx+len("/files/"):])
 		return
@@ -108,4 +114,27 @@ func (s *Server) serveRunFile(w http.ResponseWriter, r *http.Request, id, path s
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(content))
+}
+
+// serveRunZip streams a run's whole workspace as a zip download.
+func (s *Server) serveRunZip(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeError(w, errors.New(errors.CodeValidation, "method not allowed: use GET"))
+		return
+	}
+	// Headers must precede the streamed body; the run is confirmed to
+	// exist via a snapshot first so a 404 doesn't arrive mid-archive.
+	if s.agent.Get(id) == nil {
+		writeError(w, errors.New(errors.CodeNotFound, "no such agent run"))
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+".zip"))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if _, err := s.agent.ZipRun(id, w); err != nil {
+		// The status line is already sent; log and stop rather than try
+		// to write an error body into a half-written archive.
+		s.log.FromContext(r.Context()).Warn("failed to stream run zip", "run_id", id, "error", err.Error())
+	}
 }

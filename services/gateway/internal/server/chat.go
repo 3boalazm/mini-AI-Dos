@@ -74,6 +74,11 @@ const chatHTML = `<!doctype html>
   .files { margin-top: .5rem; border-top: 1px dashed rgba(127,127,127,.3); padding-top: .4rem; }
   .files .ftitle { font-size: .74rem; opacity: .7; margin-bottom: .3rem; }
   .filebtn { display: inline-block; direction: ltr; font-size: .74rem; margin: .12rem; padding: .12rem .5rem; border-radius: 5px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; font-family: ui-monospace, monospace; }
+  .zipbtn { display: block; margin: .3rem 0 .5rem; background: rgba(59,130,246,.15); border-color: #3b82f6; }
+  .zipbtn:disabled { opacity: .6; cursor: default; }
+  .filerow { display: inline-flex; align-items: stretch; margin: .12rem; direction: ltr; }
+  .filerow .filebtn { margin: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .dlbtn { border: 1px solid rgba(127,127,127,.4); border-right: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; border-top-right-radius: 5px; border-bottom-right-radius: 5px; background: rgba(127,127,127,.12); color: inherit; cursor: pointer; font-size: .74rem; padding: 0 .45rem; }
   .preview { margin-top: .5rem; }
   .preview iframe { width: 100%; height: 22rem; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; background: #fff; }
   form { display: flex; gap: .5rem; padding: .8rem 1rem; border-top: 1px solid rgba(127,127,127,.25); }
@@ -470,22 +475,68 @@ const chatHTML = `<!doctype html>
     });
   }
 
-  // File tree under a completed agent run. Clicking a file fetches it
-  // from the run's workspace; .html renders in a sandboxed iframe (no
-  // same-origin, so generated markup can't touch the gateway), other
+  // downloadBlob fetches an authenticated URL and saves the response as
+  // a file. A plain <a download> can't send the Bearer header, so the
+  // download goes through fetch → blob → a temporary object URL.
+  function downloadBlob(url, filename, key) {
+    return fetch(url, { headers: { 'Authorization': 'Bearer ' + key } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.blob();
+      })
+      .then(function (blob) {
+        var u = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = u;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(u); }, 1000);
+      });
+  }
+
+  function baseName(path) {
+    var p = path.split('/');
+    return p[p.length - 1] || path;
+  }
+
+  // File tree under a completed agent run. Each file has a preview
+  // (click the name) and a download (⬇). "تحميل ZIP" downloads the whole
+  // project. Previews: .html renders in a sandboxed iframe (no
+  // same-origin, so generated markup can't touch the gateway); other
   // files show as a copyable code block.
   function addFileTree(bubble, runId, files, key) {
     var box = document.createElement('div');
     box.className = 'files';
-    var title = document.createElement('div');
-    title.className = 'ftitle';
-    title.textContent = '📁 ملفات المشروع';
-    box.appendChild(title);
+
+    var head = document.createElement('div');
+    head.className = 'ftitle';
+    head.textContent = '📁 ملفات المشروع (' + files.length + ')';
+    box.appendChild(head);
+
+    var zipBtn = document.createElement('button');
+    zipBtn.type = 'button';
+    zipBtn.className = 'filebtn zipbtn';
+    zipBtn.textContent = '⬇ تحميل ZIP';
+    zipBtn.onclick = function () {
+      zipBtn.disabled = true;
+      var old = zipBtn.textContent;
+      zipBtn.textContent = '… جاري التحميل';
+      downloadBlob('/v1/agent/runs/' + runId + '/zip', runId + '.zip', key)
+        .catch(function () {})
+        .then(function () { zipBtn.disabled = false; zipBtn.textContent = old; });
+    };
+    box.appendChild(zipBtn);
+
     var preview = document.createElement('div');
     preview.className = 'preview';
 
     for (var i = 0; i < files.length; i++) {
       (function (path) {
+        var row = document.createElement('span');
+        row.className = 'filerow';
+
         var b = document.createElement('button');
         b.type = 'button';
         b.className = 'filebtn';
@@ -519,7 +570,19 @@ const chatHTML = `<!doctype html>
               log.scrollTop = log.scrollHeight;
             }).catch(function () {});
         };
-        box.appendChild(b);
+        row.appendChild(b);
+
+        var dl = document.createElement('button');
+        dl.type = 'button';
+        dl.className = 'dlbtn';
+        dl.title = 'تحميل ' + path;
+        dl.textContent = '⬇';
+        dl.onclick = function () {
+          downloadBlob('/v1/agent/runs/' + runId + '/files/' + path, baseName(path), key).catch(function () {});
+        };
+        row.appendChild(dl);
+
+        box.appendChild(row);
       })(files[i]);
     }
     box.appendChild(preview);

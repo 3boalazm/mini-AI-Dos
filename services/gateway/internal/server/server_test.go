@@ -356,6 +356,21 @@ func TestAgentRun_EndToEndWithMock(t *testing.T) {
 			if miss.Code != http.StatusNotFound {
 				t.Errorf("missing workspace file: got %d, want 404", miss.Code)
 			}
+			// The whole workspace downloads as a zip.
+			zr := doJSON(t, h, http.MethodGet, "/v1/agent/runs/"+created.ID+"/zip", testAPIKey, "")
+			if zr.Code != http.StatusOK {
+				t.Errorf("zip download: got %d, want 200", zr.Code)
+			}
+			if ct := zr.Header().Get("Content-Type"); ct != "application/zip" {
+				t.Errorf("zip Content-Type: got %q, want application/zip", ct)
+			}
+			if cd := zr.Header().Get("Content-Disposition"); !strings.Contains(cd, ".zip") {
+				t.Errorf("zip should be an attachment, got Content-Disposition %q", cd)
+			}
+			zbad := doJSON(t, h, http.MethodGet, "/v1/agent/runs/run_nope/zip", testAPIKey, "")
+			if zbad.Code != http.StatusNotFound {
+				t.Errorf("zip of unknown run: got %d, want 404", zbad.Code)
+			}
 			return
 		}
 		if run.Status == "failed" {

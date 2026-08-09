@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"io"
 	"strings"
@@ -273,6 +275,43 @@ func TestRun_ResultNeverLeaksToolJSON(t *testing.T) {
 	final := waitFor(t, e, run.ID, StatusCompleted)
 	if strings.Contains(final.Result, `"tool"`) || strings.Contains(final.Result, "write_file\",\"args") {
 		t.Errorf("result leaked raw tool protocol:\n%s", final.Result)
+	}
+}
+
+func TestZipRun(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`["build"]`,
+		`{"tool":"write_file","args":{"path":"index.html","content":"<h1>hi</h1>"}}`,
+		`{"tool":"write_file","args":{"path":"css/app.css","content":"body{}"}}`,
+		`{"tool":"done","args":{"summary":"built"}}`,
+		"OK",
+	}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	run, _ := e.Start("t")
+	waitFor(t, e, run.ID, StatusCompleted)
+
+	var buf bytes.Buffer
+	known, err := e.ZipRun(run.ID, &buf)
+	if !known || err != nil {
+		t.Fatalf("ZipRun: known=%v err=%v", known, err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatalf("output is not a valid zip: %v", err)
+	}
+	got := map[string]string{}
+	for _, f := range zr.File {
+		rc, _ := f.Open()
+		b, _ := io.ReadAll(rc)
+		rc.Close()
+		got[f.Name] = string(b)
+	}
+	if got["index.html"] != "<h1>hi</h1>" || got["css/app.css"] != "body{}" {
+		t.Errorf("zip contents wrong: %v", got)
+	}
+
+	if known, _ := e.ZipRun("run_nope", &buf); known {
+		t.Error("unknown run should report known=false")
 	}
 }
 

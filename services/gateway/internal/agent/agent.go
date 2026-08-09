@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,6 +184,19 @@ func (e *Engine) ReadRunFile(id, path string) (content string, known bool, err e
 	}
 	c, readErr := r.ws.ReadFile(path)
 	return c, true, readErr
+}
+
+// ZipRun writes every file in a run's workspace into w as a zip
+// archive. known reports whether the run id exists, so a missing run
+// and an empty workspace are distinguishable at the HTTP layer.
+func (e *Engine) ZipRun(id string, w io.Writer) (known bool, err error) {
+	e.mu.RLock()
+	r, ok := e.runs[id]
+	e.mu.RUnlock()
+	if !ok || r.ws == nil {
+		return false, nil
+	}
+	return true, r.ws.WriteZip(w)
 }
 
 // Cancel aborts a running run. Reports whether the id was known.

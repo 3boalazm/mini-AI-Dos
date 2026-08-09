@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/ai-dos/foundation/errors"
 	"github.com/ai-dos/gateway/internal/provider"
@@ -16,10 +15,6 @@ const (
 	// maxRequestBytes bounds the request body — chat requests are small;
 	// anything past 1 MiB is either abuse or a mistake.
 	maxRequestBytes = 1 << 20
-	// completionTimeout bounds one completion end to end, including the
-	// upstream call. The provider's own HTTP client timeout is shorter,
-	// so this is the backstop, not the primary limit.
-	completionTimeout = 90 * time.Second
 )
 
 // chatRequest is the HTTP-boundary request shape. Stream is decoded

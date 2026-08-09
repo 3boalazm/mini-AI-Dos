@@ -30,6 +30,10 @@ type Server struct {
 	repo    store.Repository
 	limiter *ratelimit.Limiter
 	httpSrv *http.Server
+	// backstop bounds one completion end to end, including the upstream
+	// call. Derived from cfg.AITimeout plus a margin, so the provider's
+	// own HTTP client timeout is the one that normally fires.
+	backstop time.Duration
 }
 
 // New assembles a Server from already-constructed dependencies.
@@ -45,6 +49,14 @@ func New(cfg *config.Config, log *logging.Logger, p provider.Provider, repo stor
 		panic("server.New: repo must be provided if and only if AuthMode is database")
 	}
 	s := &Server{cfg: cfg, log: log, provider: p, repo: repo}
+
+	// Tests build Config directly without an AITimeout; the zero value
+	// falls back to the pre-configurable 90s backstop rather than an
+	// instantly-expiring context.
+	s.backstop = 90 * time.Second
+	if cfg.AITimeout > 0 {
+		s.backstop = cfg.AITimeout + 30*time.Second
+	}
 
 	if cfg.RateLimitEnabled {
 		s.limiter = ratelimit.New(cfg.RateLimitRequests, cfg.RateLimitWindow, util.RealClock{})
@@ -62,7 +74,7 @@ func New(cfg *config.Config, log *logging.Logger, p provider.Provider, repo stor
 		Handler:           s.withObservability(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      2 * completionTimeout,
+		WriteTimeout:      2 * s.backstop,
 		IdleTimeout:       120 * time.Second,
 	}
 
@@ -71,7 +83,7 @@ func New(cfg *config.Config, log *logging.Logger, p provider.Provider, repo stor
 
 // completionContext derives the per-completion backstop timeout.
 func (s *Server) completionContext(r *http.Request) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(r.Context(), completionTimeout)
+	return context.WithTimeout(r.Context(), s.backstop)
 }
 
 // Serve accepts connections on ln until Shutdown is called. It returns

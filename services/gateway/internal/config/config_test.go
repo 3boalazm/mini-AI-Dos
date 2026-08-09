@@ -30,6 +30,28 @@ func TestLoad_MinimalDefaults(t *testing.T) {
 	if cfg.Env != "development" || cfg.LogLevel != "info" {
 		t.Errorf("env/log defaults wrong: %q / %q", cfg.Env, cfg.LogLevel)
 	}
+	if cfg.AITimeout != 120*time.Second {
+		t.Errorf("AITimeout default: got %v, want 120s", cfg.AITimeout)
+	}
+}
+
+func TestLoad_AITimeout(t *testing.T) {
+	cfg, err := load(t, map[string]string{
+		"MINI_AI_DOS_API_KEY": "k",
+		"AI_TIMEOUT":          "180",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AITimeout != 180*time.Second {
+		t.Errorf("AITimeout: got %v, want 180s", cfg.AITimeout)
+	}
+
+	for name, v := range map[string]string{"zero": "0", "negative": "-5", "too large": "601"} {
+		if _, err := load(t, map[string]string{"MINI_AI_DOS_API_KEY": "k", "AI_TIMEOUT": v}); err == nil {
+			t.Errorf("%s AI_TIMEOUT (%s) should fail validation", name, v)
+		}
+	}
 }
 
 func TestLoad_MissingGatewayKeyFails(t *testing.T) {

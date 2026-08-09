@@ -55,6 +55,12 @@ type Config struct {
 	// AIModel is the default model used when a request omits "model"
 	// (AI_MODEL, optional — with no default, requests must name one).
 	AIModel string
+	// AITimeout bounds one upstream completion call (AI_TIMEOUT,
+	// seconds, default 120). Long generations on free-tier providers —
+	// a full HTML page from a thinking model — routinely pass 60s, so
+	// the default leans generous; deployments tune it down when their
+	// traffic is short-form.
+	AITimeout time.Duration
 	// Env selects log format: "development" (text) or anything else
 	// (JSON). APP_ENV, default "development".
 	Env string
@@ -76,6 +82,7 @@ func Load(l *foundationconfig.Loader) (*Config, error) {
 		Provider:          l.OptionalString("AI_PROVIDER", ProviderMock),
 		AIBaseURL:         l.OptionalString("AI_BASE_URL", "https://api.openai.com/v1"),
 		AIModel:           l.OptionalString("AI_MODEL", ""),
+		AITimeout:         time.Duration(l.OptionalInt("AI_TIMEOUT", 120)) * time.Second,
 		Env:               l.OptionalString("APP_ENV", "development"),
 		LogLevel:          l.OptionalString("LOG_LEVEL", "info"),
 		RateLimitEnabled:  parseBool(l.OptionalString("RATE_LIMIT_ENABLED", "false")),
@@ -114,6 +121,9 @@ func Load(l *foundationconfig.Loader) (*Config, error) {
 
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		return nil, fmt.Errorf("GATEWAY_PORT must be a valid TCP port, got %d", cfg.Port)
+	}
+	if secs := int(cfg.AITimeout / time.Second); secs < 1 || secs > 600 {
+		return nil, fmt.Errorf("AI_TIMEOUT (seconds) must be between 1 and 600, got %d", secs)
 	}
 	if cfg.RateLimitEnabled && cfg.RateLimitRequests <= 0 {
 		return nil, fmt.Errorf("RATE_LIMIT_REQUESTS must be positive when rate limiting is enabled, got %d", cfg.RateLimitRequests)

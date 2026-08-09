@@ -20,10 +20,6 @@ import (
 )
 
 const (
-	// providerTimeout is the upstream HTTP client timeout — shorter than
-	// the server's per-request backstop so the provider timeout is the
-	// one that normally fires.
-	providerTimeout = 60 * time.Second
 	// shutdownGrace is how long in-flight requests get to finish.
 	shutdownGrace = 15 * time.Second
 	// dbConnectTimeout bounds the startup connection attempt in database
@@ -55,8 +51,11 @@ func run() error {
 	var p provider.Provider
 	switch cfg.Provider {
 	case config.ProviderOpenAI:
-		p = provider.NewOpenAI(cfg.AIBaseURL, cfg.AIAPIKey, providerTimeout, log)
-		log.Info("provider configured", "provider", "openai", "base_url", cfg.AIBaseURL)
+		// cfg.AITimeout is the upstream HTTP client timeout — shorter than
+		// the server's per-request backstop (AITimeout + margin) so the
+		// provider timeout is the one that normally fires.
+		p = provider.NewOpenAI(cfg.AIBaseURL, cfg.AIAPIKey, cfg.AITimeout, log)
+		log.Info("provider configured", "provider", "openai", "base_url", cfg.AIBaseURL, "timeout", cfg.AITimeout.String())
 	default:
 		p = provider.NewMock()
 		log.Info("provider configured", "provider", "mock")

@@ -259,7 +259,7 @@ func toolActivity(tc *toolCall) string {
 	switch tc.Tool {
 	case "run_command":
 		return "$ " + truncate(tc.str("command"), 80)
-	case "read_file", "write_file", "edit_file":
+	case "read_file", "write_file", "edit_file", "inspect_page":
 		return tc.Tool + ": " + tc.str("path")
 	case "search_files":
 		return "search: " + tc.str("query")
@@ -334,7 +334,11 @@ func (e *Engine) loop(ctx context.Context, id, task string) {
 	if !hasFiles {
 		deliverable = strings.Join(summaries, "\n\n")
 	}
-	verdict, err := e.inspect(ctx, task, deliverable)
+	// A4: ground the model's inspection in automated structural checks of
+	// the HTML it produced (broken links, missing assets, missing alt),
+	// so "See → Critique" catches concrete defects, not just vibes.
+	autoChecks := ws.InspectAllHTML()
+	verdict, err := e.inspect(ctx, task, deliverable, autoChecks)
 	if err != nil {
 		fail(err)
 		return
@@ -440,9 +444,10 @@ const execToolSystem = `You are the execution module of a build agent with a fil
 {"tool":"list_files","args":{}}
 {"tool":"search_files","args":{"query":"navbar"}}
 {"tool":"run_command","args":{"command":"ls -la"}}
+{"tool":"inspect_page","args":{"path":"index.html"}}
 When the current step is fully done, reply:
 {"tool":"done","args":{"summary":"what you did"}}
-Rules: relative paths only; produce real, complete file contents; run_command runs in the workspace (install/delete/git are not available yet); do this step's work then call done.`
+Rules: relative paths only; produce real, complete file contents; run_command runs in the workspace (install/delete/git are not available yet); inspect_page checks an HTML file for broken links, missing assets, and missing alt/meta — use it to verify a page you built; do this step's work then call done.`
 
 // executeStep runs the tool loop for one plan step and returns a short
 // summary of what it did.
@@ -486,13 +491,17 @@ func (e *Engine) executeStep(ctx context.Context, id string, ws *Workspace, task
 	return titles[i], nil
 }
 
-const inspectSystem = "You are the inspection module of a build agent. Compare the deliverable to the task. If it fulfils the task, reply with exactly OK. Otherwise list the concrete problems, briefly."
+const inspectSystem = "You are the inspection module of a build agent. Compare the deliverable to the task, and treat the AUTOMATED CHECKS (if any) as verified facts about the built pages. If the deliverable fulfils the task and the automated checks report no real problems, reply with exactly OK. Otherwise list the concrete problems to fix, briefly."
 
-func (e *Engine) inspect(ctx context.Context, task, deliverable string) (string, error) {
-	return e.chat(ctx, inspectSystem, "TASK:\n"+task+"\n\nDELIVERABLE:\n"+deliverable)
+func (e *Engine) inspect(ctx context.Context, task, deliverable, autoChecks string) (string, error) {
+	user := "TASK:\n" + task + "\n\nDELIVERABLE:\n" + deliverable
+	if strings.TrimSpace(autoChecks) != "" {
+		user += "\n\nAUTOMATED CHECKS:\n" + autoChecks
+	}
+	return e.chat(ctx, inspectSystem, user)
 }
 
-const fixToolSystem = `You are the fixing module of a build agent with a file workspace and a shell. Fix the issues from the inspection notes by editing files. Reply with ONLY one JSON object per turn (same tools as execution: read_file, write_file, edit_file, list_files, search_files, run_command). When the issues are fixed, reply {"tool":"done","args":{"summary":"..."}}. Relative paths only.`
+const fixToolSystem = `You are the fixing module of a build agent with a file workspace and a shell. Fix the issues from the inspection notes by editing files. Reply with ONLY one JSON object per turn (same tools as execution: read_file, write_file, edit_file, list_files, search_files, run_command, inspect_page). Use inspect_page to confirm an HTML fix resolved the reported issue. When the issues are fixed, reply {"tool":"done","args":{"summary":"..."}}. Relative paths only.`
 
 func (e *Engine) fixWithTools(ctx context.Context, id string, ws *Workspace, task, notes string) error {
 	files, _ := ws.List()

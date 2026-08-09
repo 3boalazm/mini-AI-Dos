@@ -61,6 +61,12 @@ func parseToolCall(raw string) *toolCall {
 // Go errors: the model reads them and can recover on the next turn.
 func execTool(ctx context.Context, ws *Workspace, tc *toolCall) string {
 	switch tc.Tool {
+	case "inspect_page":
+		report, err := ws.InspectPage(tc.str("path"))
+		if err != nil {
+			return "ERROR: " + err.Error()
+		}
+		return report
 	case "run_command":
 		return ws.RunCommand(ctx, tc.str("command"))
 	case "read_file":

@@ -90,6 +90,11 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if id, ok := strings.CutSuffix(rest, "/decision"); ok {
+		s.decideRun(w, r, id)
+		return
+	}
+
 	if id, ok := strings.CutSuffix(rest, "/zip"); ok {
 		s.serveRunZip(w, r, id)
 		return
@@ -136,6 +141,33 @@ func (s *Server) serveRunFile(w http.ResponseWriter, r *http.Request, id, path s
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(content))
+}
+
+// decideRun answers a run's pending command-approval (A8).
+func (s *Server) decideRun(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeError(w, errors.New(errors.CodeValidation, "method not allowed: use POST"))
+		return
+	}
+	var body struct {
+		Allow    bool `json:"allow"`
+		Remember bool `json:"remember"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, errors.Wrap(errors.CodeValidation, "request body is not valid JSON", err))
+		return
+	}
+	if !s.agent.Decide(id, body.Allow, body.Remember) {
+		writeError(w, errors.New(errors.CodeNotFound, "no such agent run awaiting a decision"))
+		return
+	}
+	status := "executing"
+	if !body.Allow {
+		status = "denied"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": status})
 }
 
 // serveRunZip streams a run's whole workspace as a zip download.

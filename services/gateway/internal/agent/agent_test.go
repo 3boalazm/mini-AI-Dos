@@ -377,6 +377,91 @@ func TestApprove_UnknownOrNotPlanned(t *testing.T) {
 	}
 }
 
+func TestRun_ApprovalGate_AllowRunsCommand(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`["setup"]`,
+		`{"tool":"run_command","args":{"command":"git init"}}`, // sensitive → gate
+		`{"tool":"done","args":{"summary":"initialised"}}`,
+		"OK",
+	}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	run, _ := e.Start("t", true)
+
+	// It should park awaiting approval, showing the pending command.
+	awaiting := waitFor(t, e, run.ID, StatusAwaitingApproval)
+	if awaiting.Status != StatusAwaitingApproval {
+		t.Fatalf("status: got %s, want awaiting_approval", awaiting.Status)
+	}
+	if awaiting.Pending == nil || awaiting.Pending.Command != "git init" || awaiting.Pending.Reason != "git" {
+		t.Fatalf("pending approval wrong: %+v", awaiting.Pending)
+	}
+
+	if !e.Decide(run.ID, true, false) {
+		t.Fatal("Decide(allow) should succeed while awaiting")
+	}
+	final := waitFor(t, e, run.ID, StatusCompleted)
+	if final.Status != StatusCompleted {
+		t.Fatalf("after allow: got %s (err %q)", final.Status, final.Error)
+	}
+	if final.Pending != nil {
+		t.Error("pending approval should be cleared after the decision")
+	}
+}
+
+func TestRun_ApprovalGate_DenyReturnsToModel(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`["setup"]`,
+		`{"tool":"run_command","args":{"command":"rm -rf important"}}`, // denied
+		`{"tool":"done","args":{"summary":"gave up on deleting"}}`,     // model adapts
+		"OK",
+	}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	run, _ := e.Start("t", true)
+	waitFor(t, e, run.ID, StatusAwaitingApproval)
+	if !e.Decide(run.ID, false, false) {
+		t.Fatal("Decide(deny) should succeed")
+	}
+	// The run recovers (the model's next turn is 'done') and completes.
+	final := waitFor(t, e, run.ID, StatusCompleted)
+	if final.Status != StatusCompleted {
+		t.Fatalf("after deny the run should still finish, got %s", final.Status)
+	}
+}
+
+func TestRun_ApprovalGate_AlwaysAllowSkipsSecondPrompt(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`["setup"]`,
+		`{"tool":"run_command","args":{"command":"git add ."}}`,       // first git → gate
+		`{"tool":"run_command","args":{"command":"git commit -m x"}}`, // second git → should NOT gate
+		`{"tool":"done","args":{"summary":"committed"}}`,
+		"OK",
+	}}
+	e := NewEngine(p, "m", t.TempDir(), testLog())
+	run, _ := e.Start("t", true)
+	waitFor(t, e, run.ID, StatusAwaitingApproval)
+	// Always-allow the git category.
+	if !e.Decide(run.ID, true, true) {
+		t.Fatal("Decide(allow, remember) should succeed")
+	}
+	// The run must complete WITHOUT parking a second time.
+	final := waitFor(t, e, run.ID, StatusCompleted)
+	if final.Status != StatusCompleted {
+		t.Fatalf("second git should have been auto-allowed, got %s", final.Status)
+	}
+}
+
+func TestDecide_UnknownOrNotAwaiting(t *testing.T) {
+	e := NewEngine(&scriptedProvider{responses: []string{`["a"]`, "w", "OK"}}, "m", t.TempDir(), testLog())
+	if e.Decide("run_nope", true, false) {
+		t.Error("deciding an unknown run should return false")
+	}
+	run, _ := e.Start("t", true)
+	waitFor(t, e, run.ID, StatusCompleted)
+	if e.Decide(run.ID, true, false) {
+		t.Error("deciding a completed run should return false")
+	}
+}
+
 func TestStart_Validation(t *testing.T) {
 	e := NewEngine(&scriptedProvider{responses: []string{"x"}}, "test-model", t.TempDir(), testLog())
 	if _, err := e.Start("   ", true); err == nil {

@@ -63,14 +63,29 @@ var rateBackoff = []time.Duration{5 * time.Second, 12 * time.Second, 20 * time.S
 type Status string
 
 const (
-	StatusPlanning   Status = "planning"
-	StatusPlanned    Status = "planned" // plan ready, awaiting user approval (A7)
-	StatusExecuting  Status = "executing"
-	StatusInspecting Status = "inspecting"
-	StatusFixing     Status = "fixing"
-	StatusCompleted  Status = "completed"
-	StatusFailed     Status = "failed"
+	StatusPlanning         Status = "planning"
+	StatusPlanned          Status = "planned" // plan ready, awaiting user approval (A7)
+	StatusExecuting        Status = "executing"
+	StatusInspecting       Status = "inspecting"
+	StatusFixing           Status = "fixing"
+	StatusAwaitingApproval Status = "awaiting_approval" // a sensitive command is waiting for a decision (A8)
+	StatusCompleted        Status = "completed"
+	StatusFailed           Status = "failed"
 )
+
+// Approval describes a sensitive action the run is paused on, shown to
+// the user so they can Allow/Deny it (A8).
+type Approval struct {
+	Tool    string `json:"tool"`
+	Command string `json:"command"`
+	Reason  string `json:"reason"`
+}
+
+// approvalDecision is the user's answer to a pending Approval.
+type approvalDecision struct {
+	allow    bool
+	remember bool // "always allow" this category for the rest of the run
+}
 
 // Step states as shown to the user.
 const (
@@ -88,19 +103,22 @@ type Step struct {
 // Run is one agent task from request to result. Snapshots returned by
 // the engine are copies — callers never share memory with the loop.
 type Run struct {
-	ID      string   `json:"id"`
-	Task    string   `json:"task"`
-	Status  Status   `json:"status"`
-	Steps   []Step   `json:"steps"`
-	Files   []string `json:"files"`
-	Log     []string `json:"log,omitempty"`
-	Result  string   `json:"result,omitempty"`
-	Error   string   `json:"error,omitempty"`
-	Created int64    `json:"created"`
+	ID      string    `json:"id"`
+	Task    string    `json:"task"`
+	Status  Status    `json:"status"`
+	Steps   []Step    `json:"steps"`
+	Files   []string  `json:"files"`
+	Log     []string  `json:"log,omitempty"`
+	Pending *Approval `json:"pending,omitempty"`
+	Result  string    `json:"result,omitempty"`
+	Error   string    `json:"error,omitempty"`
+	Created int64     `json:"created"`
 
-	cancel  context.CancelFunc
-	ws      *Workspace
-	approve chan struct{} // signalled by Approve() to release a planned run (A7)
+	cancel   context.CancelFunc
+	ws       *Workspace
+	approve  chan struct{}         // signalled by Approve() to release a planned run (A7)
+	decision chan approvalDecision // carries the user's Allow/Deny for a pending command (A8)
+	allowed  map[string]bool       // categories the user chose to "always allow" this run (A8)
 }
 
 // Engine owns every run and drives the loop. One engine per server.
@@ -144,13 +162,15 @@ func (e *Engine) Start(task string, autoStart bool) (*Run, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	run := &Run{
-		ID:      id,
-		Task:    task,
-		Status:  StatusPlanning,
-		Created: time.Now().Unix(),
-		cancel:  cancel,
-		ws:      ws,
-		approve: make(chan struct{}, 1),
+		ID:       id,
+		Task:     task,
+		Status:   StatusPlanning,
+		Created:  time.Now().Unix(),
+		cancel:   cancel,
+		ws:       ws,
+		approve:  make(chan struct{}, 1),
+		decision: make(chan approvalDecision, 1),
+		allowed:  make(map[string]bool),
 	}
 	e.mu.Lock()
 	e.runs[id] = run
@@ -183,6 +203,83 @@ func (e *Engine) Approve(id string) bool {
 	}
 }
 
+// Decide answers a run's pending command approval (A8). remember="always
+// allow" whitelists the category for the rest of the run. Reports
+// whether the run was actually awaiting a decision.
+func (e *Engine) Decide(id string, allow, remember bool) bool {
+	e.mu.RLock()
+	r, ok := e.runs[id]
+	awaiting := ok && r.Status == StatusAwaitingApproval
+	var ch chan approvalDecision
+	if ok {
+		ch = r.decision
+	}
+	e.mu.RUnlock()
+	if !awaiting || ch == nil {
+		return false
+	}
+	select {
+	case ch <- approvalDecision{allow: allow, remember: remember}:
+		return true
+	default:
+		return false
+	}
+}
+
+// runTool dispatches one tool, routing a sensitive run_command through
+// the approval gate first (A8). A denied command returns a result the
+// model reads and adapts to rather than a hard failure.
+func (e *Engine) runTool(ctx context.Context, id string, ws *Workspace, tc *toolCall) string {
+	if tc.Tool == "run_command" {
+		if reason, sensitive := commandCategory(tc.str("command")); sensitive {
+			if !e.requestApproval(ctx, id, tc.str("command"), reason) {
+				return "DENIED by the user — do not retry this command; find another approach or finish. Command: " + tc.str("command")
+			}
+		}
+	}
+	return execTool(ctx, ws, tc)
+}
+
+// requestApproval pauses the run on a sensitive command until the user
+// decides, unless the category was already "always allowed". Returns
+// whether the command may run. A cancelled context denies.
+func (e *Engine) requestApproval(ctx context.Context, id, command, reason string) bool {
+	e.mu.RLock()
+	r, ok := e.runs[id]
+	pre := ok && r.allowed[reason]
+	var ch chan approvalDecision
+	if ok {
+		ch = r.decision
+	}
+	e.mu.RUnlock()
+	if pre {
+		return true
+	}
+
+	var prev Status
+	e.update(id, func(r *Run) {
+		prev = r.Status
+		r.Status = StatusAwaitingApproval
+		r.Pending = &Approval{Tool: "run_command", Command: command, Reason: reason}
+	})
+	e.log.Info("agent awaiting command approval", "run_id", id, "reason", reason, "command", command)
+
+	select {
+	case d := <-ch:
+		e.update(id, func(r *Run) {
+			r.Pending = nil
+			r.Status = prev
+			if d.allow && d.remember {
+				r.allowed[reason] = true
+			}
+		})
+		return d.allow
+	case <-ctx.Done():
+		e.update(id, func(r *Run) { r.Pending = nil; r.Status = prev })
+		return false
+	}
+}
+
 // Get returns a snapshot copy of a run, or nil when unknown.
 func (e *Engine) Get(id string) *Run {
 	e.mu.RLock()
@@ -195,9 +292,15 @@ func (e *Engine) Get(id string) *Run {
 	cp.cancel = nil
 	cp.ws = nil
 	cp.approve = nil
+	cp.decision = nil
+	cp.allowed = nil
 	cp.Steps = append([]Step(nil), r.Steps...)
 	cp.Files = append([]string(nil), r.Files...)
 	cp.Log = append([]string(nil), r.Log...)
+	if r.Pending != nil {
+		p := *r.Pending
+		cp.Pending = &p
+	}
 	return &cp
 }
 
@@ -535,7 +638,7 @@ func (e *Engine) executeStep(ctx context.Context, id string, ws *Workspace, task
 			return cleanSummary(tc.str("summary"), titles[i]), nil
 		}
 		e.appendLog(id, toolActivity(tc))
-		result := execTool(ctx, ws, tc)
+		result := e.runTool(ctx, id, ws, tc)
 		msgs = append(msgs,
 			provider.Message{Role: provider.RoleAssistant, Content: out},
 			provider.Message{Role: provider.RoleUser, Content: "TOOL RESULT:\n" + truncate(result, maxToolResult)},
@@ -572,7 +675,7 @@ func (e *Engine) fixWithTools(ctx context.Context, id string, ws *Workspace, tas
 			return nil
 		}
 		e.appendLog(id, toolActivity(tc))
-		result := execTool(ctx, ws, tc)
+		result := e.runTool(ctx, id, ws, tc)
 		msgs = append(msgs,
 			provider.Message{Role: provider.RoleAssistant, Content: out},
 			provider.Message{Role: provider.RoleUser, Content: "TOOL RESULT:\n" + truncate(result, maxToolResult)},

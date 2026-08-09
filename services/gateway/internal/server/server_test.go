@@ -334,6 +334,14 @@ func TestAgentRun_PlanGate_ApproveFlow(t *testing.T) {
 	}
 }
 
+func TestAgentRun_Decision_UnknownRun404(t *testing.T) {
+	h := newTestServer(t, func(c *config.Config) { c.AIModel = "agent-model" })
+	rec := doJSON(t, h, http.MethodPost, "/v1/agent/runs/run_nope/decision", testAPIKey, `{"allow":true}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("deciding an unknown/idle run: got %d, want 404", rec.Code)
+	}
+}
+
 func TestAgentRun_UnknownId404(t *testing.T) {
 	h := newTestServer(t, func(c *config.Config) { c.AIModel = "agent-model" })
 	rec := doJSON(t, h, http.MethodGet, "/v1/agent/runs/run_nope", testAPIKey, "")

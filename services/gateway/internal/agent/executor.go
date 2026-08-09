@@ -17,14 +17,14 @@ const (
 	maxCommandOutput = 8 * 1024
 )
 
-// blockedCommands maps a first-token (or package-manager subcommand)
-// to why it is withheld. These are exactly the "sensitive" categories
-// AGENT_ROADMAP.md defers to the approval system (A8): until that
-// exists, the agent's terminal runs read/build/test-style commands but
-// not install, delete, git, network fetch, or privilege escalation.
-var blockedCommands = map[string]string{
+// sensitiveCommands maps a first-token (or package-manager subcommand)
+// to its category. These are the actions AGENT_ROADMAP.md routes
+// through the approval system (A8): the agent runs read/build/test
+// commands freely, but install, delete, git, network fetch, and
+// privilege escalation each pause for the user's Allow/Deny decision.
+var sensitiveCommands = map[string]string{
 	"rm": "delete", "rmdir": "delete", "del": "delete", "rd": "delete",
-	"git":  "git (roadmap A10)",
+	"git":  "git",
 	"sudo": "privilege escalation",
 	"apt":  "package install", "apt-get": "package install", "pip": "package install",
 	"pip3": "package install", "gem": "package install", "brew": "package install",
@@ -38,22 +38,23 @@ var blockedCommands = map[string]string{
 	"chmod": "permissions", "chown": "permissions",
 }
 
-// commandIsBlocked reports whether a command touches a deferred
-// sensitive category, and why. It tokenizes on shell separators so a
-// blocked verb anywhere in a pipeline is caught, and specifically
-// blocks "<pkg-manager> install|add".
-func commandIsBlocked(command string) (string, bool) {
+// commandCategory reports whether a command falls in a sensitive
+// category (and which). It tokenizes on shell separators so a sensitive
+// verb anywhere in a pipeline is caught, and specifically flags
+// "<pkg-manager> install|add". The engine routes sensitive commands
+// through the approval gate (A8); everything else runs freely.
+func commandCategory(command string) (string, bool) {
 	lower := strings.ToLower(command)
 	fields := strings.FieldsFunc(lower, func(r rune) bool {
 		return r == ' ' || r == '\t' || r == '\n' || r == ';' || r == '|' || r == '&' || r == '(' || r == ')' || r == '`'
 	})
 	for _, f := range fields {
-		if reason, ok := blockedCommands[f]; ok {
+		if reason, ok := sensitiveCommands[f]; ok {
 			return reason, true
 		}
 	}
 	// "<pm> install/add/i" — the package managers we otherwise allow to
-	// run scripts (npm run build is fine; npm install is not).
+	// run scripts (npm run build is fine; npm install needs approval).
 	for i := 0; i+1 < len(fields); i++ {
 		switch fields[i] {
 		case "npm", "yarn", "pnpm", "cargo", "bundle", "poetry":
@@ -67,16 +68,14 @@ func commandIsBlocked(command string) (string, bool) {
 }
 
 // RunCommand executes a shell command in the workspace root with a
-// timeout and bounded, combined output. Blocked commands and failures
-// come back as text results (never Go errors) so the agent loop reads
-// them and adapts, exactly like the file tools.
+// timeout and bounded, combined output. It does NOT gate sensitive
+// commands — that decision belongs to the engine, which alone can pause
+// the run for the user's approval (A8). Failures come back as text
+// results (never Go errors) so the agent loop reads them and adapts.
 func (w *Workspace) RunCommand(ctx context.Context, command string) string {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return "ERROR: command is required"
-	}
-	if reason, blocked := commandIsBlocked(command); blocked {
-		return "ERROR: '" + reason + "' commands require approval, which isn't available yet (roadmap A8). Not run: " + command
 	}
 
 	cctx, cancel := context.WithTimeout(ctx, commandTimeout)

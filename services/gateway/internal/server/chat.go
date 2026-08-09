@@ -400,7 +400,8 @@ const chatHTML = `<!doctype html>
     planned: 'الخطة جاهزة — راجعها واضغط ابدأ:',
     executing: 'بينفذ الخطة…',
     inspecting: 'بيراجع شغله…',
-    fixing: 'بيصلح المشاكل اللي لقاها…'
+    fixing: 'بيصلح المشاكل اللي لقاها…',
+    awaiting_approval: '⚠ الوكيل محتاج موافقتك:'
   };
 
   function renderSteps(stepsEl, steps) {
@@ -641,7 +642,40 @@ const chatHTML = `<!doctype html>
 
   function pollRun(key, phase, stepsEl, activityEl, actionsEl, stopBtn, t0) {
     var awaitingApproval = false;
+    var awaitingDecision = false;
     function resume() { state.poll = setTimeout(tick, 300); }
+
+    // A8: sensitive-command approval. Shows the command and Allow once /
+    // always / Deny, posts the decision, then resumes the run.
+    function showDecision(pending) {
+      awaitingDecision = true;
+      phase.textContent = '⚠ الوكيل عايز يشغّل أمر (' + (pending.reason || '') + '):';
+      var cmd = document.createElement('div');
+      cmd.className = 'activity';
+      cmd.style.display = '';
+      var line = document.createElement('div');
+      line.textContent = '$ ' + pending.command;
+      cmd.appendChild(line);
+      actionsEl.textContent = '';
+      actionsEl.appendChild(cmd);
+      var row = document.createElement('div');
+      row.className = 'actions';
+      function decide(allow, remember) {
+        actionsEl.textContent = '';
+        stopBtn();
+        fetch('/v1/agent/runs/' + state.runId + '/decision', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+          body: JSON.stringify({ allow: allow, remember: remember })
+        }).then(function () { awaitingDecision = false; resume(); })
+          .catch(function () { errorCard('تعذّر إرسال القرار'); });
+      }
+      row.appendChild(actionBtn('اسمح مرة', 'primary', function () { decide(true, false); }));
+      row.appendChild(actionBtn('اسمح دايمًا', '', function () { decide(true, true); }));
+      row.appendChild(actionBtn('ارفض', 'danger', function () { decide(false, false); }));
+      actionsEl.appendChild(row);
+    }
+
     function tick() {
       fetch('/v1/agent/runs/' + state.runId, { headers: { 'Authorization': 'Bearer ' + key } })
         .then(function (r) { return r.json(); })
@@ -676,6 +710,13 @@ const chatHTML = `<!doctype html>
             }
             return; // paused: no re-poll while awaiting the user
           }
+
+          // A8 approval gate: a sensitive command is waiting for a decision.
+          if (run.status === 'awaiting_approval' && run.pending) {
+            if (!awaitingDecision) { showDecision(run.pending); }
+            return; // paused until the user decides
+          }
+
           if (run.status === 'completed') {
             state.runId = null;
             var doneId = run.id;

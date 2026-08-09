@@ -61,19 +61,28 @@ func TestRunCommand(t *testing.T) {
 	if !strings.Contains(out, "hello123") {
 		t.Errorf("run_command echo: %q", out)
 	}
+}
 
-	// Sensitive categories are refused until the approval system (A8).
-	for _, c := range []string{"rm -rf .", "git status", "npm install left-pad", "sudo ls", "curl http://x"} {
-		got := execTool(ctx, ws, &toolCall{Tool: "run_command", Args: map[string]any{"command": c}})
-		if !strings.Contains(got, "require approval") {
-			t.Errorf("command %q should be blocked, got %q", c, got)
+func TestCommandCategory(t *testing.T) {
+	// Sensitive categories are recognised so the engine can gate them.
+	sensitive := map[string]string{
+		"rm -rf .":             "delete",
+		"git status":           "git",
+		"npm install left-pad": "package install",
+		"sudo ls":              "privilege escalation",
+		"curl http://x":        "network fetch",
+	}
+	for cmd, wantReason := range sensitive {
+		reason, ok := commandCategory(cmd)
+		if !ok || reason != wantReason {
+			t.Errorf("commandCategory(%q) = (%q,%v), want (%q,true)", cmd, reason, ok, wantReason)
 		}
 	}
-
-	// "npm run build" is a script run, not an install — allowed through
-	// the guard (it fails only because npm isn't present, which is a
-	// normal EXIT result, not a block).
-	if got, blocked := commandIsBlocked("npm run build"); blocked {
-		t.Errorf("npm run build should not be blocked, got reason %q", got)
+	// "npm run build" is a script run, not an install — not sensitive.
+	if reason, ok := commandCategory("npm run build"); ok {
+		t.Errorf("npm run build should not be sensitive, got reason %q", reason)
+	}
+	if _, ok := commandCategory("ls -la"); ok {
+		t.Error("ls should not be sensitive")
 	}
 }

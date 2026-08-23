@@ -47,6 +47,28 @@ upstream account. To talk to a real OpenAI-compatible provider, set
 `AI_BASE_URL` / `AI_MODEL`. Every variable is documented in
 [.env.example](.env.example) — nothing else is read.
 
+### Local models with Ollama (free, on-device)
+
+[Ollama](https://ollama.com) exposes an OpenAI-compatible API, so the
+`openai` provider talks to it unchanged — point `AI_BASE_URL` at it.
+Two PowerShell helpers in [scripts/](scripts/) wrap the setup:
+
+```powershell
+ollama pull qwen2.5-coder:7b
+.\scripts\dev-local.ps1                      # gateway on :8080 → qwen2.5-coder:7b
+.\scripts\dev-local.ps1 -Model llama3.1:8b   # any pulled model; -Model mock needs no Ollama
+```
+
+```powershell
+.\scripts\ask.ps1 "Write a Go table-driven test for clampLimit"
+.\scripts\ask.ps1 "لخّص الملف ده" -File .\README.md -System "أجب بالعربية"
+```
+
+`ask.ps1` sends UTF-8 and prints only the reply, so non-ASCII prompts
+work from the Windows console. Any OpenAI-compatible tool (IDE
+assistants, SDKs) can use the gateway the same way: base URL
+`http://localhost:8080/v1`, API key = `MINI_AI_DOS_API_KEY`.
+
 ## Persistent mode (PostgreSQL-backed API keys)
 
 Start PostgreSQL and set up the environment (the URL below matches

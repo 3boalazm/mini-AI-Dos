@@ -67,6 +67,38 @@ func TestLoad_FailoverProviders(t *testing.T) {
 	}
 }
 
+func TestLoad_FailoverPerProviderTimeout(t *testing.T) {
+	cfg, err := load(t, map[string]string{
+		"MINI_AI_DOS_API_KEY": "k",
+		"GEMINI_API_KEY":      "gem-key",
+		"AI_TIMEOUT":          "90",
+		"AI_PROVIDERS": `[
+			{"name":"tunnel-qwen","base_url":"https://t/v1","key":"node-key","model":"qwen2.5:3b","timeout_seconds":8},
+			{"name":"gemini","base_url":"https://g/v1","key_env":"GEMINI_API_KEY","model":"gemini-3.6-flash"}
+		]`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.AIProviders[0].Timeout; got != 8*time.Second {
+		t.Errorf("explicit timeout_seconds: got %v, want 8s", got)
+	}
+	// Unset inherits the global AI_TIMEOUT.
+	if got := cfg.AIProviders[1].Timeout; got != 90*time.Second {
+		t.Errorf("default timeout should inherit AI_TIMEOUT: got %v, want 90s", got)
+	}
+}
+
+func TestLoad_FailoverTimeoutRejectsOutOfRange(t *testing.T) {
+	_, err := load(t, map[string]string{
+		"MINI_AI_DOS_API_KEY": "k",
+		"AI_PROVIDERS":        `[{"name":"x","base_url":"https://x/v1","key":"k","model":"m","timeout_seconds":9999}]`,
+	})
+	if err == nil {
+		t.Fatal("expected error for timeout_seconds out of range")
+	}
+}
+
 func TestLoad_FailoverValidation(t *testing.T) {
 	// Missing key_env value.
 	if _, err := load(t, map[string]string{

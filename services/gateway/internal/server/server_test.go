@@ -337,7 +337,9 @@ func TestAgentRun_PlanGate_ApproveFlow(t *testing.T) {
 		var run struct {
 			Status string `json:"status"`
 		}
-		_ = json.Unmarshal(pr.Body.Bytes(), &run)
+		if err := json.Unmarshal(pr.Body.Bytes(), &run); err != nil {
+			t.Fatalf("unexpected non-JSON run body: %v", err)
+		}
 		if run.Status != "planned" {
 			break
 		}

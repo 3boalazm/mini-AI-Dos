@@ -61,6 +61,7 @@ func run() error {
 				Name:     pc.Name,
 				Model:    pc.Model,
 				Provider: provider.NewOpenAI(pc.BaseURL, pc.APIKey, cfg.AITimeout, log),
+				Timeout:  pc.Timeout,
 			})
 			names = append(names, pc.Name)
 		}

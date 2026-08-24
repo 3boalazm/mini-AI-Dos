@@ -36,6 +36,11 @@ type ProviderConfig struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	// Timeout bounds one attempt against this upstream (its entry's
+	// timeout_seconds; the global AI_TIMEOUT when unset). A slow or
+	// unreachable upstream — a laptop node behind a tunnel — gets a
+	// tight bound so its failure costs seconds, not the global limit.
+	Timeout time.Duration
 }
 
 // Config is everything the gateway reads from the environment.
@@ -133,7 +138,7 @@ func Load(l *foundationconfig.Loader) (*Config, error) {
 	// gateway routes through that chain and the single-provider
 	// variables (AI_PROVIDER / AI_API_KEY / AI_BASE_URL) are ignored.
 	if raw := strings.TrimSpace(l.OptionalString("AI_PROVIDERS", "")); raw != "" {
-		providers, err := parseProviders(l, raw)
+		providers, err := parseProviders(l, raw, cfg.AITimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -177,13 +182,16 @@ func Load(l *foundationconfig.Loader) (*Config, error) {
 // entry's API key. Keys are referenced by env-var name (key_env) so the
 // JSON blob itself carries no secrets and can be committed as an
 // example; a literal "key" is also accepted for convenience.
-func parseProviders(l *foundationconfig.Loader, raw string) ([]ProviderConfig, error) {
+func parseProviders(l *foundationconfig.Loader, raw string, defaultTimeout time.Duration) ([]ProviderConfig, error) {
 	var entries []struct {
 		Name    string `json:"name"`
 		BaseURL string `json:"base_url"`
 		KeyEnv  string `json:"key_env"`
 		Key     string `json:"key"`
 		Model   string `json:"model"`
+		// TimeoutSeconds bounds one attempt against this upstream;
+		// 0/omitted inherits the global AI_TIMEOUT.
+		TimeoutSeconds int `json:"timeout_seconds"`
 	}
 	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
 		return nil, fmt.Errorf("AI_PROVIDERS must be a JSON array of provider objects: %w", err)
@@ -203,7 +211,14 @@ func parseProviders(l *foundationconfig.Loader, raw string) ([]ProviderConfig, e
 		if key == "" {
 			return nil, fmt.Errorf("AI_PROVIDERS[%d] (%s): API key missing (env %q is unset and no literal key given)", i, e.Name, e.KeyEnv)
 		}
-		out = append(out, ProviderConfig{Name: e.Name, BaseURL: e.BaseURL, APIKey: key, Model: e.Model})
+		if e.TimeoutSeconds < 0 || e.TimeoutSeconds > 600 {
+			return nil, fmt.Errorf("AI_PROVIDERS[%d] (%s): timeout_seconds must be between 1 and 600 (or omitted), got %d", i, e.Name, e.TimeoutSeconds)
+		}
+		timeout := defaultTimeout
+		if e.TimeoutSeconds > 0 {
+			timeout = time.Duration(e.TimeoutSeconds) * time.Second
+		}
+		out = append(out, ProviderConfig{Name: e.Name, BaseURL: e.BaseURL, APIKey: key, Model: e.Model, Timeout: timeout})
 	}
 	return out, nil
 }
